@@ -1,0 +1,68 @@
+M - Main thread, C - Caller thread
+
+
+[Private] - Private properties
+    - [M] socket_on_created_callback
+    - [M] socket_on_destroyed_callback
+    - [M] socket_on_listening_callback
+    - [M] socket_on_connecting_callback
+    - [M] socket_on_stopped_callback
+    - [M] session_create_callback
+    - [M] session_receive_callback
+    - [M] session_send_callback
+    - [M] session_set_channel_mode_callback
+
+
+[Public] - Public methods
+    - [M] plugin_configure -> plugin_process_configure (Done)
+
+    - [M] socket_get_nchannels -> plugin_process_socket_get_nchannels (Done)
+    - [M] socket_get_channel_mode -> plugin_process_socket_get_channel_mode (Done)
+    - [M] socket_attach
+    - [C] socket_detach -> stopped
+
+    - [C] session_set_private -> plugin_process_session_set_private (Done)
+    - [C] session_get_private -> plugin_process_session_get_private (Done)
+    - [C] session_create -> plugin_handle_session_create
+        + After calling the callback, the connected event will be dispatched
+    - [C] session_destroy -> plugin_handle_session_destroy
+        + The disconnected event will be dispatched
+    - [C] session_receive -> plugin_handle_session_receive
+        + New message is acquired
+        + On received event will be dispatched after callback
+
+    - [M] message_write -> plugin_process_message_write
+    - [M] message_read  -> plugin_process_message_read
+
+
+[Internal] - Private methods
+    - [M] plugin_dispatch_socket_on_created_callback
+    - [M] plugin_dispatch_socket_on_destroyed_callback
+    - [M] plugin_dispatch_socket_on_listening_callback
+    - [M] plugin_dispatch_socket_on_connecting_callback
+    - [M] plugin_dispatch_socket_on_stopped_callback
+    
+    - [C] plugin_process_socket_set_private
+    - [C] plugin_process_socket_get_private
+    - [C] plugin_process_session_set_private
+    - [C] plugin_process_session_get_private
+    
+    - [C] plugin_handle_session_create
+    - [C] plugin_handle_session_destroy
+    - [C] plugin_handle_session_receive
+
+    - [M] plugin_process_configure
+    - [M] plugin_process_socket_get_nchannels
+    - [M] plugin_process_socket_get_channel_mode
+    - [M] plugin_process_session_create
+    - [M] plugin_process_session_destroy
+    - [M] plugin_process_session_receive
+    - [M] plugin_process_message_write
+    - [M] plugin_process_message_read
+
+[Flow]
+    - [Main] On Listening/On Connecting
+    - [Plug] Attach socket
+    - [Main] Request stop socket
+    - [Plug] Detach socket
+    - [Main] On stopped
