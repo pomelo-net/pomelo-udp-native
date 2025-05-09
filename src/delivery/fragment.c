@@ -1,140 +1,220 @@
 #include <assert.h>
 #include <string.h>
-#include "codec/packed.h"
 #include "delivery.h"
 #include "fragment.h"
+#include "context.h"
+
+
+void pomelo_delivery_fragment_init(pomelo_delivery_fragment_t * fragment) {
+    assert(fragment != NULL);
+    memset(fragment, 0, sizeof(pomelo_delivery_fragment_t));
+}
+
+
+void pomelo_delivery_fragment_cleanup(pomelo_delivery_fragment_t * fragment) {
+    assert(fragment != NULL);
+
+    if (fragment->content.buffer) {
+        pomelo_buffer_unref(fragment->content.buffer);
+        fragment->content.buffer = NULL;
+    }
+}
 
 
 int pomelo_delivery_fragment_meta_decode(
     pomelo_delivery_fragment_meta_t * meta,
-    pomelo_payload_t * payload
+    pomelo_buffer_view_t * view
 ) {
     assert(meta != NULL);
-    assert(payload != NULL);
+    assert(view != NULL);
 
-    if (payload->capacity < 1) {
-        return -1;
+    if (view->length < POMELO_DELIVERY_FRAGMENT_META_MIN_SIZE) {
+        return -1; // Not enough space for meta
     }
 
-    // Save the current position for later restoring
-    size_t position = payload->position;
+    pomelo_payload_t payload;
+    payload.data = view->buffer->data + view->offset;
+    payload.position = 0;
+    payload.capacity = view->length;
 
-    // Seek to the last byte
-    size_t meta_byte = payload->data[payload->capacity - 1];
+    uint8_t meta_byte = 0;
+    pomelo_payload_read_uint8_unsafe(&payload, &meta_byte);
+
     size_t sequence_bytes = (meta_byte & 0x07) + 1;
-    size_t total_fragments_bytes = ((meta_byte >> 3) & 0x01) + 1;
+    size_t last_index_bytes = ((meta_byte >> 3) & 0x01) + 1;
     size_t fragment_index_bytes = ((meta_byte >> 4) & 0x01) + 1;
-    size_t bus_index_bytes = ((meta_byte >> 5) & 0x01) + 1;
+    size_t bus_id_bytes = ((meta_byte >> 5) & 0x01) + 1;
     size_t fragment_type = meta_byte >> 6;
 
-    if (fragment_type >= POMELO_FRAGMENT_TYPE_COUNT) {
-        // Invalid fragment type
-        return -1;
-    }
-
-    size_t meta_bytes = 1 +
-        total_fragments_bytes +
+    size_t meta_length = 1 +
+        last_index_bytes +
         fragment_index_bytes +
-        bus_index_bytes +
+        bus_id_bytes +
         sequence_bytes;
 
-    if (payload->capacity < meta_bytes) {
-        return -1;
-    }
+    if (view->length < meta_length) return -1; // Not enough space for meta
 
-    // The new capacity
-    size_t capacity = payload->capacity - meta_bytes;
-    payload->position = capacity;
-
-    uint64_t value = 0;  // buffered value
+    // Temporary value
+    uint64_t value = 0;
     
-    // Read bus index
-    pomelo_codec_read_packed_uint64(payload, bus_index_bytes, &value);
-    meta->bus_index = (size_t) value;
+    // Read bus id
+    pomelo_payload_read_packed_uint64_unsafe(&payload, bus_id_bytes, &value);
+    meta->bus_id = (size_t) value;
 
     // Read fragment index
-    pomelo_codec_read_packed_uint64(payload, fragment_index_bytes, &value);
+    pomelo_payload_read_packed_uint64_unsafe(
+        &payload,
+        fragment_index_bytes,
+        &value
+    );
     meta->fragment_index = (size_t) value;
 
-    // Read total fragments
-    pomelo_codec_read_packed_uint64(payload, total_fragments_bytes, &value);
-    meta->total_fragments = (size_t) value;
+    // Read last index
+    pomelo_payload_read_packed_uint64_unsafe(
+        &payload,
+        last_index_bytes,
+        &value
+    );
+    // total_fragments = last_index + 1
+    meta->last_index = (size_t) value;
 
     // Read sequence
-    pomelo_codec_read_packed_uint64(payload, sequence_bytes, &value);
-    meta->parcel_sequence = value;
+    pomelo_payload_read_packed_uint64_unsafe(&payload, sequence_bytes, &value);
+    meta->sequence = value;
 
     // The type
     meta->type = (pomelo_delivery_fragment_type) fragment_type;
 
-    // Limit the capacity and reset position
-    payload->position = position;
-    payload->capacity = capacity;
-    
+    // Update the view length and offset
+    view->length -= meta_length;
+    view->offset += meta_length;
     return 0;
 }
 
 
 int pomelo_delivery_fragment_meta_encode(
     pomelo_delivery_fragment_meta_t * meta,
-    pomelo_payload_t * payload
+    pomelo_buffer_view_t * view
 ) {
     assert(meta != NULL);
-    assert(payload != NULL);
+    assert(view != NULL);
+    assert(meta->last_index >= 0);
 
-    size_t bus_index_bytes = 
-        pomelo_codec_calc_packed_uint64_bytes(meta->bus_index);
+    size_t bus_id_bytes = 
+        pomelo_payload_calc_packed_uint64_bytes(meta->bus_id);
     size_t fragment_index_bytes =
-        pomelo_codec_calc_packed_uint64_bytes(meta->fragment_index);
-    size_t total_fragments_bytes =
-        pomelo_codec_calc_packed_uint64_bytes(meta->total_fragments);
+        pomelo_payload_calc_packed_uint64_bytes(meta->fragment_index);
+    size_t last_index_bytes =
+        pomelo_payload_calc_packed_uint64_bytes(meta->last_index);
     size_t sequence_bytes =
-        pomelo_codec_calc_packed_uint64_bytes(meta->parcel_sequence);
+        pomelo_payload_calc_packed_uint64_bytes(meta->sequence);
 
-    if (
-        bus_index_bytes > 2 ||
-        fragment_index_bytes > 2 ||
-        total_fragments_bytes > 2
-    ) {
-        return -1;
-    }
+    assert(bus_id_bytes <= 2);
+    assert(fragment_index_bytes <= 2);
+    assert(last_index_bytes <= 2);
 
-    // Extend the payload capacity
-    payload->capacity += POMELO_MAX_FRAGMENT_META_DATA_BYTES;
+    // Set meta length
+    size_t meta_length = 1 +
+        last_index_bytes +
+        fragment_index_bytes +
+        bus_id_bytes +
+        sequence_bytes;
+
+    // Check if there is enough space for meta
+    size_t remain = view->buffer->capacity - (view->offset + view->length);
+    if (remain < meta_length) return -1; // Not enough space for meta
+
+    // Write at the end of the view
+    pomelo_payload_t payload;
+    payload.data = view->buffer->data + view->offset;
+    payload.position = view->length;
+    payload.capacity = view->buffer->capacity - view->offset;
+
+    size_t meta_byte =
+        (meta->type << 6)                  |
+        ((bus_id_bytes - 1) << 5)          |
+        ((fragment_index_bytes - 1) << 4)  |
+        ((last_index_bytes - 1) << 3)      |
+        (sequence_bytes - 1);
+
+    // Encode the meta of fragment
+    pomelo_payload_write_uint8_unsafe(&payload, (uint8_t) meta_byte);
 
     // Write bus index
-    pomelo_codec_write_packed_uint64(payload, bus_index_bytes, meta->bus_index);
+    pomelo_payload_write_packed_uint64_unsafe(
+        &payload,
+        bus_id_bytes,
+        meta->bus_id
+    );
 
     // Write fragment index
-    pomelo_codec_write_packed_uint64(
-        payload,
+    pomelo_payload_write_packed_uint64_unsafe(
+        &payload,
         fragment_index_bytes,
         meta->fragment_index
     );
 
-    // Total fragments
-    pomelo_codec_write_packed_uint64(
-        payload,
-        total_fragments_bytes,
-        meta->total_fragments
+    // Last index
+    pomelo_payload_write_packed_uint64_unsafe(
+        &payload,
+        last_index_bytes,
+        meta->last_index
     );
 
     // Sequence
-    pomelo_codec_write_packed_uint64(
-        payload,
+    pomelo_payload_write_packed_uint64_unsafe(
+        &payload,
         sequence_bytes,
-        meta->parcel_sequence
+        meta->sequence
     );
 
-    size_t meta_byte =
-        (meta->type << 6) |
-        ((bus_index_bytes - 1) << 5) |
-        ((fragment_index_bytes - 1) << 4) |
-        ((total_fragments_bytes - 1) << 3) |
-        (sequence_bytes - 1);
-
-    // Encode the meta of fragment
-    pomelo_payload_write_uint8(payload, (uint8_t) meta_byte);
-
+    view->length += meta_length;
     return 0;
+}
+
+
+void pomelo_delivery_fragment_set_context(
+    pomelo_delivery_fragment_t * fragment,
+    pomelo_delivery_context_t * context
+) {
+    assert(fragment != NULL);
+    assert(context != NULL);
+
+    if (fragment->content.buffer) {
+        pomelo_buffer_set_context(
+            fragment->content.buffer,
+            context->buffer_context
+        );
+    }
+}
+
+
+void pomelo_delivery_fragment_attach_content(
+    pomelo_delivery_fragment_t * fragment,
+    pomelo_buffer_view_t * view_content
+) {
+    assert(fragment != NULL);
+    assert(view_content != NULL);
+    assert(fragment->content.buffer == NULL);
+
+    // Set the view content
+    fragment->content = *view_content;
+    pomelo_buffer_ref(view_content->buffer);
+}
+
+
+void pomelo_delivery_fragment_attach_buffer(
+    pomelo_delivery_fragment_t * fragment,
+    pomelo_buffer_t * buffer
+) {
+    assert(fragment != NULL);
+    assert(buffer != NULL);
+    assert(fragment->content.buffer == NULL);
+
+    // Attach the buffer to content view
+    pomelo_buffer_view_t * view = &fragment->content;
+    view->buffer = buffer;
+    view->offset = 0;
+    view->length = 0;
+    pomelo_buffer_ref(buffer);
 }

@@ -11,20 +11,52 @@
 #define pomelo_buffer_check_alive(buffer) (void) (buffer)
 #endif
 
+#define POMELO_BUFFER_CONTEXT_SHARED_BUFFER_DEFAULT_SIZE 128
+
 
 /* -------------------------------------------------------------------------- */
-/*                             Global buffer APIs                             */
+/*                                 Common APIs                                */
 /* -------------------------------------------------------------------------- */
 
-void pomelo_buffer_context_root_options_init(
-    pomelo_buffer_context_root_options_t * options
-) {
-    assert(options != NULL);
-    memset(options, 0, sizeof(pomelo_buffer_context_root_options_t));
+
+void pomelo_buffer_context_destroy(pomelo_buffer_context_t * context) {
+    assert(context != NULL);
+
+    if ((pomelo_buffer_context_t *) (context->root) == context) {
+        pomelo_buffer_context_root_destroy(
+            (pomelo_buffer_context_root_t *) context
+        );
+    } else {
+        pomelo_buffer_context_shared_destroy(
+            (pomelo_buffer_context_shared_t *) context
+        );
+    }
 }
 
 
-pomelo_buffer_context_root_t * pomelo_buffer_context_root_create(
+pomelo_buffer_t * pomelo_buffer_context_acquire(
+    pomelo_buffer_context_t * context
+) {
+    assert(context != NULL);
+    return context->acquire(context);
+}
+
+
+void pomelo_buffer_context_statistic(
+    pomelo_buffer_context_t * context,
+    pomelo_statistic_buffer_t * statistic
+) {
+    assert(context != NULL);
+    assert(statistic != NULL);
+    context->statistic(context, statistic);
+}
+
+
+/* -------------------------------------------------------------------------- */
+/*                             Root context APIs                              */
+/* -------------------------------------------------------------------------- */
+
+pomelo_buffer_context_t * pomelo_buffer_context_root_create(
     pomelo_buffer_context_root_options_t * options
 ) {
     assert(options != NULL);
@@ -50,8 +82,8 @@ pomelo_buffer_context_root_t * pomelo_buffer_context_root_create(
     context->buffer_capacity = options->buffer_capacity;
 
     // Set the interface functions
-    pomelo_buffer_context_t * base =
-        (pomelo_buffer_context_t *) context;
+    pomelo_buffer_context_t * base = &context->base;
+    base->root = context;
     base->acquire = (pomelo_buffer_context_acquire_fn)
         pomelo_buffer_context_root_acquire;
     base->release = (pomelo_buffer_context_release_fn)
@@ -59,31 +91,29 @@ pomelo_buffer_context_root_t * pomelo_buffer_context_root_create(
     base->statistic = (pomelo_buffer_context_statistic_fn)
         pomelo_buffer_context_root_statistic;
 
-    // Create data pool (Synchronized)
-    pomelo_pool_options_t pool_options;
-    pomelo_pool_options_init(&pool_options);
-    pool_options.allocator = allocator;
-    pool_options.callback_context = context;
-    pool_options.element_size =
-        sizeof(pomelo_buffer_t) + context->buffer_capacity;
-    pool_options.allocate_callback = (pomelo_pool_callback) pomelo_buffer_alloc;
-    pool_options.acquire_callback = (pomelo_pool_callback) pomelo_buffer_init;
-#ifdef POMELO_MULTI_THREAD
-    pool_options.synchronized = true;
-#endif // !POMELO_MULTI_THREAD
-
-    context->buffer_pool = pomelo_pool_create(&pool_options);
+    // Create buffer pool
+    pomelo_pool_root_options_t pool_options = {
+        .allocator = allocator,
+        .alloc_data = context,
+        .element_size = sizeof(pomelo_buffer_t) + context->buffer_capacity,
+        .on_alloc = (pomelo_pool_alloc_cb) pomelo_buffer_on_alloc,
+        .on_init = (pomelo_pool_init_cb) pomelo_buffer_init,
+        .synchronized = options->synchronized
+    };
+    context->buffer_pool = pomelo_pool_root_create(&pool_options);
     if (!context->buffer_pool) {
         // Failed to create buffer pool
         pomelo_buffer_context_root_destroy(context);
         return NULL;
     }
 
-    return context;
+    return base;
 }
 
 
-void pomelo_buffer_context_root_destroy(pomelo_buffer_context_root_t * context) {
+void pomelo_buffer_context_root_destroy(
+    pomelo_buffer_context_root_t * context
+) {
     assert(context != NULL);
 
     if (context->buffer_pool) {
@@ -99,16 +129,7 @@ pomelo_buffer_t * pomelo_buffer_context_root_acquire(
     pomelo_buffer_context_root_t * context
 ) {
     assert(context != NULL);
-
-    pomelo_buffer_t * buffer = pomelo_pool_acquire(context->buffer_pool);
-    if (!buffer) {
-        // Failed to allocate new buffer
-        return NULL;
-    }
-
-    // Set the context for buffer
-    buffer->context = (pomelo_buffer_context_t *) context;
-    return buffer;
+    return pomelo_pool_acquire(context->buffer_pool, context);
 }
 
 
@@ -126,7 +147,7 @@ void pomelo_buffer_context_root_release(
 
 void pomelo_buffer_context_root_statistic(
     pomelo_buffer_context_root_t * context,
-    pomelo_statistic_buffer_context_t * statistic
+    pomelo_statistic_buffer_t * statistic
 ) {
     assert(context != NULL);
     assert(statistic != NULL);
@@ -138,23 +159,18 @@ void pomelo_buffer_context_root_statistic(
 /*                        Shared buffer context APIs                          */
 /* -------------------------------------------------------------------------- */
 
-#ifdef POMELO_MULTI_THREAD
 
-void pomelo_buffer_context_shared_options_init(
-    pomelo_buffer_context_shared_options_t * options
-) {
-    assert(options != NULL);
-    memset(options, 0, sizeof(pomelo_buffer_context_shared_options_t));
-    options->buffer_size = POMELO_BUFFER_CONTEXT_SHARED_BUFFER_DEFAULT_SIZE;
-}
-
-
-pomelo_buffer_context_shared_t * pomelo_buffer_context_shared_create(
+pomelo_buffer_context_t * pomelo_buffer_context_shared_create(
     pomelo_buffer_context_shared_options_t * options
 ) {
     assert(options != NULL);
     if (!options->context || options->buffer_size <= 0) {
         return NULL;
+    }
+
+    size_t buffer_size = options->buffer_size;
+    if (buffer_size == 0) {
+        buffer_size = POMELO_BUFFER_CONTEXT_SHARED_BUFFER_DEFAULT_SIZE;
     }
 
     pomelo_allocator_t * allocator = options->allocator;
@@ -174,10 +190,10 @@ pomelo_buffer_context_shared_t * pomelo_buffer_context_shared_create(
 
     memset(context, 0, sizeof(pomelo_buffer_context_shared_t));
     context->allocator = allocator;
-    context->root_context = options->context;
 
     // Setup interface
     pomelo_buffer_context_t * base = &context->base;
+    base->root = options->context->root;
     base->acquire = (pomelo_buffer_context_acquire_fn)
         pomelo_buffer_context_shared_acquire;
     base->release = (pomelo_buffer_context_release_fn)
@@ -186,19 +202,18 @@ pomelo_buffer_context_shared_t * pomelo_buffer_context_shared_create(
         pomelo_buffer_context_shared_statistic;
 
     // Create shared buffer pool from master context
-    pomelo_shared_pool_options_t pool_options;
-    pomelo_shared_pool_options_init(&pool_options);
-    pool_options.allocator = allocator;
-    pool_options.buffers = options->buffer_size;
-    pool_options.master_pool = options->context->buffer_pool;
-
-    context->buffer_pool = pomelo_shared_pool_create(&pool_options);
+    pomelo_pool_shared_options_t pool_options = {
+        .allocator = allocator,
+        .buffers = buffer_size,
+        .origin_pool = options->context->root->buffer_pool
+    };
+    context->buffer_pool = pomelo_pool_shared_create(&pool_options);
     if (!context->buffer_pool) {
         pomelo_buffer_context_shared_destroy(context);
         return NULL;
     }
 
-    return context;
+    return base;
 }
 
 
@@ -208,7 +223,7 @@ void pomelo_buffer_context_shared_destroy(
     assert(context != NULL);
 
     if (context->buffer_pool) {
-        pomelo_shared_pool_destroy(context->buffer_pool);
+        pomelo_pool_destroy(context->buffer_pool);
         context->buffer_pool = NULL;
     }
 
@@ -220,58 +235,42 @@ pomelo_buffer_t * pomelo_buffer_context_shared_acquire(
     pomelo_buffer_context_shared_t * context
 ) {
     assert(context != NULL);
-
-    pomelo_buffer_t * buffer = pomelo_shared_pool_acquire(context->buffer_pool);
-    if (!buffer) {
-        // Failed to allocate buffer
-        return NULL;
-    }
-
-    // Set the context for buffer
-    buffer->context = (pomelo_buffer_context_t *) context;
-    return buffer;
+    return pomelo_pool_acquire(context->buffer_pool, context);
 }
 
 
-/// @brief Release a buffer
 void pomelo_buffer_context_shared_release(
     pomelo_buffer_context_shared_t * context,
     pomelo_buffer_t * buffer
 ) {
     assert(context != NULL);
     assert(buffer != NULL);
-
-    // Release the buffer to pool
-    pomelo_shared_pool_release(context->buffer_pool, buffer);
+    pomelo_pool_release(context->buffer_pool, buffer);
 }
 
 
-/// @brief Get the statistic of buffer context
 void pomelo_buffer_context_shared_statistic(
     pomelo_buffer_context_shared_t * context,
-    pomelo_statistic_buffer_context_t * statistic
+    pomelo_statistic_buffer_t * statistic
 ) {
     assert(context != NULL);
-    pomelo_buffer_context_root_statistic(context->root_context, statistic);
+    pomelo_buffer_context_root_statistic(context->base.root, statistic);
 }
 
-#endif // POMELO_MULTI_THREAD
 
 /* -------------------------------------------------------------------------- */
 /*                               Buffer APIs                                  */
 /* -------------------------------------------------------------------------- */
 
-int pomelo_buffer_ref(pomelo_buffer_t * buffer) {
+bool pomelo_buffer_ref(pomelo_buffer_t * buffer) {
     assert(buffer != NULL);
-    bool result = pomelo_reference_ref(&buffer->ref);
-    return result ? 0 : -1;
+    return pomelo_reference_ref(&buffer->ref);
 }
 
 
-int pomelo_buffer_unref(pomelo_buffer_t * buffer) {
+void pomelo_buffer_unref(pomelo_buffer_t * buffer) {
     assert(buffer != NULL);
     pomelo_reference_unref(&buffer->ref);
-    return 0;
 }
 
 
@@ -287,18 +286,37 @@ void pomelo_buffer_set_context(
 }
 
 
+pomelo_buffer_t * pomelo_buffer_wrap(
+    void * data,
+    size_t capacity,
+    pomelo_buffer_finalize_fn finalize_fn
+) {
+    assert(data != NULL);
+    if (capacity < sizeof(pomelo_buffer_t)) return NULL; // Not enough memory
+
+    pomelo_buffer_t * buffer = (pomelo_buffer_t *) data;
+    buffer->data = (uint8_t *) (buffer + 1);
+    buffer->capacity = capacity - sizeof(pomelo_buffer_t);
+    buffer->context = NULL;
+
+    pomelo_reference_init(&buffer->ref, (pomelo_ref_finalize_cb) finalize_fn);
+    return buffer;
+}
+
+
 /* -------------------------------------------------------------------------- */
 /*                                Private APIs                                */
 /* -------------------------------------------------------------------------- */
 
-int pomelo_buffer_alloc(
+int pomelo_buffer_on_alloc(
     pomelo_buffer_t * buffer,
     pomelo_buffer_context_root_t * context
 ) {
     assert(buffer != NULL);
     assert(context != NULL);
 
-    buffer->data = (uint8_t *) (buffer + 1); // Data is at the end of buffer
+    // Data is always at the end of buffer header
+    buffer->data = (uint8_t *) (buffer + 1);
     buffer->capacity = context->buffer_capacity;
 
     return 0;
@@ -307,21 +325,21 @@ int pomelo_buffer_alloc(
 
 int pomelo_buffer_init(
     pomelo_buffer_t * buffer,
-    pomelo_buffer_context_root_t * context
+    pomelo_buffer_context_t * context
 ) {
     assert(buffer != NULL);
-    (void) context;
+    buffer->context = context;
 
     // Initialize reference
     pomelo_reference_init(
         &buffer->ref,
-        (pomelo_ref_finalize_cb) pomelo_buffer_finalize
+        (pomelo_ref_finalize_cb) pomelo_buffer_on_finalize
     );
     return 0;
 }
 
 
-void pomelo_buffer_finalize(pomelo_buffer_t * buffer) {
+void pomelo_buffer_on_finalize(pomelo_buffer_t * buffer) {
     assert(buffer != NULL);
     pomelo_buffer_context_t * context = buffer->context;
     context->release(context, buffer);

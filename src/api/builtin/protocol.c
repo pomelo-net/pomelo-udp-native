@@ -2,6 +2,7 @@
 #include "protocol/protocol.h"
 #include "session.h"
 #include "api/socket.h"
+#include "api/context.h"
 #include "api/plugin/plugin.h"
 
 
@@ -13,49 +14,25 @@ void pomelo_protocol_socket_on_connected(
     assert(peer != NULL);
 
     pomelo_socket_t * api_socket = pomelo_protocol_socket_get_extra(socket);
-    if (!api_socket) {
-        // No associated socket
-        return;
-    }
-
-    // Built-in sessions pool
-    pomelo_pool_t * session_pool = api_socket->builtin_session_pool;
+    if (!api_socket) return; // No associated socket
 
     // Acquire new session
-    pomelo_session_builtin_t * session = pomelo_pool_acquire(session_pool);
-    if (!session) {
-        // Failed to allocate session
-        return;
-    }
+    pomelo_session_builtin_info_t info = {
+        .socket = api_socket,
+        .peer = peer
+    };
+    pomelo_session_builtin_t * session = pomelo_pool_acquire(
+        api_socket->context->builtin_session_pool,
+        &info
+    );
+    if (!session) return; // Failed to allocate session
 
-    // Acquire new delivery endpoint
-    pomelo_delivery_endpoint_t * endpoint =
-        pomelo_delivery_transporter_acquire_endpoint(api_socket->transporter);
-    if (!endpoint) {
-        // Failed to acquire new endpoint
-        pomelo_pool_release(session_pool, session);
-        return;
-    }
-
-    // Wrap the session
-    int ret = pomelo_session_builtin_wrap(session, endpoint, peer);
-    if (ret < 0) {
-        // Failed to wrap new session
-        pomelo_pool_release(session_pool, session);
-        pomelo_delivery_transporter_release_endpoint(
-            api_socket->transporter,
-            endpoint
-        );
-        return;
-    }
-
-    pomelo_session_t * session_base = &session->base;
+    // Update the state of session
+    pomelo_session_t * base = &session->base;
+    base->state = POMELO_SESSION_STATE_CONNECTING;
 
     // Add session to list (head of list)
-    pomelo_socket_add_session(api_socket, session_base);
-
-    // Call the callback
-    pomelo_socket_on_connected(api_socket, session_base);
+    pomelo_socket_add_session(api_socket, base);
 }
 
 
@@ -67,10 +44,7 @@ void pomelo_protocol_socket_on_disconnected(
     assert(peer != NULL);
 
     pomelo_session_builtin_t * session = pomelo_protocol_peer_get_extra(peer);
-    if (!session) {
-        // No associated session, discard
-        return;
-    }
+    if (!session) return; // No associated session, discard
 
     pomelo_session_builtin_on_disconnected(session);
 }
@@ -79,47 +53,20 @@ void pomelo_protocol_socket_on_disconnected(
 void pomelo_protocol_socket_on_received(
     pomelo_protocol_socket_t * socket,
     pomelo_protocol_peer_t * peer,
-    pomelo_buffer_t * buffer,
-    size_t offset,
-    size_t length
+    pomelo_buffer_view_t * view
 ) {
     assert(socket != NULL);
     assert(peer != NULL);
-    assert(buffer != NULL);
+    assert(view != NULL);
 
     pomelo_socket_t * api_socket = pomelo_protocol_socket_get_extra(socket);
-    if (!api_socket) {
-        // No associated socket
-        return;
-    }
+    if (!api_socket) return; // No associated socket
 
     pomelo_session_builtin_t * session = pomelo_protocol_peer_get_extra(peer);
-    if (!session) {
-        // No associated session, discard
-        return;
-    }
+    if (!session) return; // No associated session, discard
 
     // Forward payload from protocol layer to delivery layer
-    pomelo_delivery_endpoint_recv(session->endpoint, buffer, offset, length);
-}
-
-
-void pomelo_protocol_socket_on_stopped(pomelo_protocol_socket_t * socket) {
-    assert(socket != NULL);
-
-    pomelo_socket_t * api_socket = pomelo_protocol_socket_get_extra(socket);
-    if (api_socket->state == POMELO_SOCKET_STATE_STOPPING) {
-        // The socket has request stopping
-        pomelo_socket_process_stopped_component(
-            api_socket,
-            POMELO_SOCKET_COMPONENT_PROTOCOL_SOCKET
-        );
-    } else {
-        pomelo_socket_process_stopped_component_unexpectedly(
-            api_socket,
-            POMELO_SOCKET_COMPONENT_PROTOCOL_SOCKET
-        );
-    }
+    pomelo_delivery_endpoint_recv(session->endpoint, view);
 }
 
 
@@ -130,6 +77,7 @@ void pomelo_protocol_socket_on_connect_result(
     assert(socket != NULL);
 
     pomelo_socket_t * api_socket = pomelo_protocol_socket_get_extra(socket);
+    if (!api_socket) return; // No associated socket
 
     // Finally, call the callback
     pomelo_socket_on_connect_result(

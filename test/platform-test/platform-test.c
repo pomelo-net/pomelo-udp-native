@@ -13,13 +13,12 @@
 // Common platform entities
 static pomelo_pool_t * buffer_pool = NULL;
 static pomelo_platform_t * platform = NULL;
-static pomelo_platform_timer_t * timer = NULL;
-
+static pomelo_platform_timer_handle_t timer_handle;
+static pomelo_threadsafe_executor_t * executor = NULL;
 
 static int test_work_result = 0;
 static int test_work_entry_result = 0;
 static int test_work_cancel_result = 0;
-static int test_canceled_all_works_result = 0;
 
 static int test_timer_counter = 0;
 static int test_timer_result = 0;
@@ -30,33 +29,41 @@ static int tesk_main_task_result = 0;
 
 static uint64_t test_timer_last_callback_time = 0;
 static int platform_done_counter = 0;
+static bool platform_done_flag = false;
 
 
 // socket platform entities
 static pomelo_platform_udp_t * server = NULL;
 static pomelo_platform_udp_t * client = NULL;
 
-/// Task group
-static pomelo_platform_task_group_t * task_group = NULL;
+// Temp variables
+static void * temp_data = NULL;
+
+
+static void platform_shutdown_callback(pomelo_platform_t * platform) {
+    (void) platform;
+    pomelo_track_function();
+    platform_done_flag = true;
+}
 
 
 static void platform_done(void) {
     platform_done_counter++;
 
-    if (platform_done_counter == 5) {
+    if (platform_done_counter == 4) {
         // Then shutdown the platform job
-        pomelo_platform_shutdown(platform);
+        pomelo_platform_shutdown(platform, platform_shutdown_callback);
     }
 }
 
 
 static void alloc_callback(
     void * callback_data,
-    pomelo_buffer_vector_t * buffer
+    pomelo_platform_iovec_t * buffer
 ) {
     (void) callback_data;
-    buffer->data = pomelo_pool_acquire(buffer_pool);
-    buffer->length = buffer->data ? POMELO_PACKET_BUFFER_CAPACITY_DEFAULT : 0;
+    buffer->data = pomelo_pool_acquire(buffer_pool, NULL);
+    buffer->length = buffer->data ? POMELO_BUFFER_CAPACITY : 0;
 }
 
 
@@ -81,14 +88,6 @@ static void pomelo_test_work_entry(void * data) {
 }
 
 
-static void pomelo_platform_canceled_all_works(void * data) {
-    pomelo_track_function();
-    (void) data;
-
-    test_canceled_all_works_result = 1;
-}
-
-
 static void pomelo_test_work_done(void * data, bool canceled) {
     pomelo_track_function();
     (void) data;
@@ -96,23 +95,14 @@ static void pomelo_test_work_done(void * data, bool canceled) {
     test_work_result = (canceled == 0);
 
     // Test cancel case
-    pomelo_platform_submit_worker_task(
+    pomelo_platform_task_t * task = pomelo_platform_submit_worker_task(
         platform,
-        task_group,
         pomelo_test_work_cancel_entry,
         pomelo_test_work_cancel_done,
         NULL
     );
 
-    // uv_sleep(100);
-
-    pomelo_platform_cancel_task_group(
-        platform,
-        task_group,
-        pomelo_platform_canceled_all_works,
-        NULL
-    );
-
+    pomelo_platform_cancel_worker_task(platform, task);
     platform_done();
 }
 
@@ -120,16 +110,14 @@ static int pomelo_test_platform_work(void) {
     pomelo_track_function();
 
     // Test the platform work
-    pomelo_check(
-        pomelo_platform_submit_worker_task(
-            platform,
-            task_group,
-            pomelo_test_work_entry,
-            pomelo_test_work_done,
-            &test_work_entry_result
-        ) == 0
+    pomelo_platform_task_t * task = pomelo_platform_submit_worker_task(
+        platform,
+        pomelo_test_work_entry,
+        pomelo_test_work_done,
+        &test_work_entry_result
     );
 
+    pomelo_check(task != NULL);
     return 0;
 }
 
@@ -149,7 +137,7 @@ static void pomelo_test_timer_callback(void * data) {
     test_timer_last_callback_time = time;
 
     if (*counter == 5) {
-        pomelo_platform_timer_stop(platform, timer);
+        pomelo_platform_timer_stop(platform, &timer_handle);
         test_timer_result = 1;
 
         platform_done();
@@ -163,15 +151,16 @@ static int pomelo_test_platform_timer(void) {
     // Test the platform timer
     test_timer_last_callback_time = pomelo_platform_hrtime(platform);
 
-    timer = pomelo_platform_timer_start(
+    int ret = pomelo_platform_timer_start(
         platform,
         pomelo_test_timer_callback,
         TEST_TIMER_INTERVAL, // Timeout
         TEST_TIMER_INTERVAL, // Inteval
-        &test_timer_counter
+        &test_timer_counter,
+        &timer_handle
     );
 
-    pomelo_check(timer != NULL);
+    pomelo_check(ret == 0);
     return 0;
 }
 
@@ -184,10 +173,22 @@ static void stop_sockets(void) {
 }
 
 
+static void server_send_callback(
+    void * send_callback_data,
+    int status
+) {
+    (void) status;
+    pomelo_track_function();
+    // The sending callback
+
+    pomelo_pool_release(buffer_pool, send_callback_data);
+}
+
+
 static void server_recv_callback(
     void * recv_callback_data,
     pomelo_address_t * address,
-    pomelo_buffer_vector_t * buffer,
+    pomelo_platform_iovec_t * buffer,
     int status
 ) {
     (void) recv_callback_data;
@@ -229,7 +230,7 @@ static void server_recv_callback(
     // Send the payload from client to server
     printf("[i] Server send payload to Client port: %d\n", address->port);
 
-    pomelo_buffer_vector_t buf;
+    pomelo_platform_iovec_t buf;
     buf.data = payload.data;
     buf.length = payload.position;
 
@@ -239,7 +240,8 @@ static void server_recv_callback(
         address,
         /* nbufs = */ 1,
         &buf,
-        payload.data
+        payload.data,
+        server_send_callback
     );
 
     if (ret < 0) {
@@ -253,24 +255,11 @@ static void server_recv_callback(
 }
 
 
-static void server_send_callback(
-    void * context,
-    void * send_callback_data,
-    int status
-) {
-    (void) context;
-    (void) status;
-    pomelo_track_function();
-    // The sending callback
-
-    pomelo_pool_release(buffer_pool, send_callback_data);
-}
-
 
 static void client_recv_callback(
     void * recv_callback_data,
     pomelo_address_t * address,
-    pomelo_buffer_vector_t * buffer,
+    pomelo_platform_iovec_t * buffer,
     int status
 ) {
     (void) recv_callback_data;
@@ -295,11 +284,9 @@ static void client_recv_callback(
 
 
 static void client_send_callback(
-    void * context,
     void * send_callback_data,
     int status
 ) {
-    (void) context;
     (void) status;
     pomelo_track_function();
 
@@ -328,31 +315,29 @@ static int pomelo_test_platform_socket(void) {
     client = pomelo_platform_udp_connect(platform, &addr);
     pomelo_check(client != NULL);
 
-    pomelo_platform_udp_set_callbacks(
+    pomelo_platform_udp_recv_start(
         platform,
         server,
         NULL,
         alloc_callback,
-        server_recv_callback,
-        server_send_callback
+        server_recv_callback
     );
 
-    pomelo_platform_udp_set_callbacks(
+    pomelo_platform_udp_recv_start(
         platform,
         client,
         NULL,
         alloc_callback,
-        client_recv_callback,
-        client_send_callback
+        client_recv_callback
     );
 
     // Acquire one payload from pool
-    uint8_t * data = pomelo_pool_acquire(buffer_pool);
+    uint8_t * data = pomelo_pool_acquire(buffer_pool, NULL);
     pomelo_check(data != NULL);
 
     pomelo_payload_t payload;
     payload.position = 0;
-    payload.capacity = POMELO_PACKET_BUFFER_CAPACITY_DEFAULT;
+    payload.capacity = POMELO_BUFFER_CAPACITY;
     payload.data = data;
 
     pomelo_payload_write_int32(&payload, CLIENT_TO_SERVER_DATA); // Write an integer
@@ -360,7 +345,7 @@ static int pomelo_test_platform_socket(void) {
     // Send the payload from client to server
     printf("[i] Client send payload to Server\n");
     
-    pomelo_buffer_vector_t buf;
+    pomelo_platform_iovec_t buf;
     buf.data = payload.data;
     buf.length = payload.position;
 
@@ -370,7 +355,8 @@ static int pomelo_test_platform_socket(void) {
         /* address = */ NULL,
         /* nbufs = */ 1,
         &buf,
-        payload.data
+        payload.data,
+        client_send_callback
     );
 
     pomelo_check(ret == 0);
@@ -380,50 +366,25 @@ static int pomelo_test_platform_socket(void) {
 
 static void pomelo_test_platform_job_callback(void * data) {
     pomelo_track_function();
-    tesk_main_task_result = ((uint64_t) data) == 1;
+    tesk_main_task_result = (data == temp_data);
+
+    // Release the threadsafe executor
+    pomelo_platform_release_threadsafe_executor(platform, executor);
+    executor = NULL;
 
     platform_done();
 }
 
 
 static int pomelo_test_platform_job(void) {
-    return pomelo_platform_submit_main_task(
+    pomelo_platform_task_t * task = pomelo_threadsafe_executor_submit(
         platform,
+        executor,
         pomelo_test_platform_job_callback,
-        (void *) 1
+        temp_data
     );
-}
-
-static int deferred_calls = 0;
-static void pomelo_test_platform_deferred_callback(void * data);
-
-
-static void pomelo_test_platform_deferred_callback(void * data) {
-    (void) data;
-    pomelo_track_function();
-    deferred_calls++;
-
-    if (deferred_calls == 2) {
-        platform_done();
-    } else {
-        // Call twice
-        pomelo_platform_submit_deferred_task(
-            platform,
-            NULL,
-            pomelo_test_platform_deferred_callback,
-            NULL
-        );
-    }
-}
-
-
-static int pomelo_test_platform_deferred(void) {
-    return pomelo_platform_submit_deferred_task(
-        platform,
-        NULL,
-        pomelo_test_platform_deferred_callback,
-        NULL
-    );
+    pomelo_check(task != NULL);
+    return 0;
 }
 
 
@@ -431,25 +392,23 @@ int pomelo_test_platform(void) {
     pomelo_allocator_t * allocator = pomelo_allocator_default();
     uint64_t alloc_bytes = pomelo_allocator_allocated_bytes(allocator);
 
-    pomelo_pool_options_t pool_options;
-    pomelo_pool_options_init(&pool_options);
-    pool_options.allocator = allocator;
-    pool_options.element_size = POMELO_PACKET_BUFFER_CAPACITY_DEFAULT;
-
-    buffer_pool = pomelo_pool_create(&pool_options);
-    if (!buffer_pool) {
-        return -1;
-    }
+    pomelo_pool_root_options_t pool_options = {
+        .allocator = allocator,
+        .element_size = POMELO_BUFFER_CAPACITY
+    };
+    buffer_pool = pomelo_pool_root_create(&pool_options);
+    pomelo_check(buffer_pool != NULL);
 
     // Create platform first
     platform = pomelo_test_platform_create(allocator);
     pomelo_check(platform != NULL);
 
-    task_group = pomelo_platform_acquire_task_group(platform);
-    pomelo_check(task_group != NULL);
-
     // Start the job controller
     pomelo_platform_startup(platform);
+
+    // Acquire the threadsafe executor
+    executor = pomelo_platform_acquire_threadsafe_executor(platform);
+    pomelo_check(executor != NULL);
 
     // Try to get the current time
     uint64_t current = pomelo_platform_hrtime(platform);
@@ -460,11 +419,9 @@ int pomelo_test_platform(void) {
     pomelo_check(pomelo_test_platform_timer() == 0);
     pomelo_check(pomelo_test_platform_socket() == 0);
     pomelo_check(pomelo_test_platform_job() == 0);
-    pomelo_check(pomelo_test_platform_deferred() == 0);
 
     pomelo_test_platform_run(platform);
 
-    pomelo_platform_release_task_group(platform, task_group);
     pomelo_pool_destroy(buffer_pool);
     pomelo_test_platform_destroy(platform);
 
@@ -472,11 +429,11 @@ int pomelo_test_platform(void) {
     pomelo_check(test_work_entry_result == 1);
     pomelo_check(test_work_cancel_result == 1);
     pomelo_check(test_timer_result == 1);
-    pomelo_check(test_canceled_all_works_result == 1);
     pomelo_check(test_timer_result == 1);
     pomelo_check(test_client_result == 1);
     pomelo_check(test_server_result == 1);
     pomelo_check(tesk_main_task_result == 1);
+    pomelo_check(platform_done_flag == true);
 
     // Check memleak
     pomelo_check(pomelo_allocator_allocated_bytes(allocator) == alloc_bytes);

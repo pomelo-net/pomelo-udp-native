@@ -21,6 +21,9 @@
 /// Convert seconds to milliseconds
 #define POMELO_SECONDS_TO_MS(seconds) ((seconds) * 1000ULL)
 
+/// Convert seconds to nanoseconds
+#define POMELO_SECONDS_TO_NS(seconds) ((seconds) * 1000000000ULL)
+
 /// Divide ceil
 #define POMELO_CEIL_DIV(a, b) (((a) / (b)) + (((a) % (b)) > 0))
 

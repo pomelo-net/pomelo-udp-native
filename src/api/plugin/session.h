@@ -2,27 +2,24 @@
 #define POMELO_API_PLUGIN_SESSION_SRC_H
 #include "api/session.h"
 #include "utils/atomic.h"
-#include "utils/list.h"
+#include "utils/array.h"
 #include "plugin.h"
-
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 
-/// @brief Creating command of sessions
-typedef struct pomelo_session_plugin_create_command_s
-    pomelo_session_plugin_create_command_t;
+/// @brief The session plugin info
+typedef struct pomelo_session_plugin_info_s pomelo_session_plugin_info_t;
 
-/// @brief Destroying command of sessions
-typedef struct pomelo_session_plugin_destroy_command_s
-    pomelo_session_plugin_destroy_command_t;
 
-/// @brief Receiving command of sessions
-typedef struct pomelo_session_plugin_receive_command_s
-    pomelo_session_plugin_receive_command_t;
+struct pomelo_session_plugin_info_s {
+    /// @brief The socket
+    pomelo_socket_t * socket;
 
+    /// @brief The plugin implementation
+    pomelo_plugin_impl_t * plugin;
+};
 
 struct pomelo_session_plugin_s {
     /// @brief The base session
@@ -32,34 +29,13 @@ struct pomelo_session_plugin_s {
     pomelo_plugin_impl_t * plugin;
 
     /// @brief The plugin private data
-    void * private_data;
+    pomelo_extra_t private_data;
 
     /// @brief List of channels
-    pomelo_unrolled_list_t * channels;
-};
+    pomelo_array_t * channels;
 
-
-struct pomelo_session_plugin_create_command_s {
-    pomelo_plugin_impl_t * plugin;
-    pomelo_socket_t * socket;
-    int64_t client_id;
-    pomelo_address_t address;
-    void * private_data;
-    void * callback_data;
-};
-
-
-struct pomelo_session_plugin_destroy_command_s {
-    pomelo_plugin_impl_t * plugin;
-    pomelo_session_plugin_t * session;
-};
-
-
-struct pomelo_session_plugin_receive_command_s {
-    pomelo_plugin_impl_t * plugin;
-    pomelo_session_plugin_t * session;
-    size_t channel_index;
-    void * callback_data;
+    /// @brief The destroy task
+    pomelo_sequencer_task_t destroy_task;
 };
 
 
@@ -68,42 +44,42 @@ struct pomelo_session_plugin_receive_command_s {
 /* -------------------------------------------------------------------------- */
 
 /// @brief Set private data for session
-void * POMELO_PLUGIN_CALL pomelo_plugin_process_session_get_private(
+void POMELO_PLUGIN_CALL pomelo_plugin_session_set_private(
+    pomelo_plugin_t * plugin,
+    pomelo_session_t * session,
+    void * data
+);
+
+
+/// @brief Get private data for session
+void * POMELO_PLUGIN_CALL pomelo_plugin_session_get_private(
     pomelo_plugin_t * plugin,
     pomelo_session_t * session
 );
 
 
 /// @brief Handle creating new session
-void POMELO_PLUGIN_CALL pomelo_plugin_handle_session_create(
+pomelo_session_t * POMELO_PLUGIN_CALL pomelo_plugin_session_create(
     pomelo_plugin_t * plugin,
     pomelo_socket_t * socket,
     int64_t client_id,
-    pomelo_address_t * address,
-    void * private_data,
-    void * callback_data
+    pomelo_address_t * address
 );
 
 
 /// @brief Handle destroying a session
-void POMELO_PLUGIN_CALL pomelo_plugin_handle_session_destroy(
+void POMELO_PLUGIN_CALL pomelo_plugin_session_destroy(
     pomelo_plugin_t * plugin,
     pomelo_session_t * session
 );
 
 
 /// @brief Handle receiving new message
-void POMELO_PLUGIN_CALL pomelo_plugin_handle_session_receive(
+void POMELO_PLUGIN_CALL pomelo_plugin_session_receive(
     pomelo_plugin_t * plugin,
     pomelo_session_t * session,
     size_t channel_index,
-    void * callback_data
-);
-
-/// @brief Handle getting signature of session
-uint64_t POMELO_PLUGIN_CALL pomelo_plugin_handle_session_signature(
-    pomelo_plugin_t * plugin,
-    pomelo_session_t * session
+    pomelo_message_t * message
 );
 
 
@@ -116,36 +92,27 @@ uint64_t POMELO_PLUGIN_CALL pomelo_plugin_handle_session_signature(
 pomelo_session_methods_t * pomelo_session_plugin_methods(void);
 
 
-/// @brief Release the plugin session
-void pomelo_session_plugin_release(pomelo_session_plugin_t * session);
-
 
 /// @brief Allocating callback for session pool
-int pomelo_session_plugin_alloc(
+int pomelo_session_plugin_on_alloc(
     pomelo_session_plugin_t * session,
-    pomelo_plugin_impl_t * plugin
+    pomelo_context_t * context
 );
 
 
 /// @brief Deallocating callback for session pool
-int pomelo_session_plugin_dealloc(
-    pomelo_session_plugin_t * session,
-    pomelo_plugin_impl_t * plugin
-);
+void pomelo_session_plugin_on_free(pomelo_session_plugin_t * session);
 
 
 /// @brief Initialize the plugin session
 int pomelo_session_plugin_init(
     pomelo_session_plugin_t * session,
-    pomelo_socket_t * socket
+    pomelo_session_plugin_info_t * info
 );
 
 
-/// @brief Finalize the plugin session
-int pomelo_session_plugin_finalize(
-    pomelo_session_plugin_t * session,
-    pomelo_socket_t * socket
-);
+/// @brief Cleanup the plugin session
+void pomelo_session_plugin_cleanup(pomelo_session_plugin_t * session);
 
 
 /// @brief Disconnect the plugin session
@@ -167,70 +134,8 @@ pomelo_channel_plugin_t * pomelo_session_plugin_get_channel(
 );
 
 
-/// @brief Process creating session in main thread
-void pomelo_plugin_process_session_create(
-    pomelo_session_plugin_create_command_t * command
-);
-
-
-/// @brief Process creating session in main thread
-void pomelo_plugin_process_session_create_ex(
-    pomelo_plugin_impl_t * plugin,
-    pomelo_socket_t * socket,
-    int64_t client_id,
-    pomelo_address_t * address,
-    void * private_data,
-    void * callback_data
-);
-
-
-/// @brief Process when creating session failed
-void pomelo_plugin_process_session_create_result(
-    pomelo_plugin_impl_t * plugin,
-    pomelo_socket_t * socket,
-    pomelo_session_plugin_t * session,
-    void * callback_data,
-    pomelo_plugin_error_t error
-);
-
-
-/// @brief Process destroying session in main thread
-void pomelo_plugin_process_session_destroy(
-    pomelo_session_plugin_destroy_command_t * command
-);
-
-
-/// @brief Process destroying session in main thread
-void pomelo_plugin_process_session_destroy_ex(
-    pomelo_plugin_impl_t * plugin,
-    pomelo_session_plugin_t * session
-);
-
-
-/// @brief Process receiving result
-void pomelo_plugin_process_session_receive_result(
-    pomelo_plugin_impl_t * plugin,
-    pomelo_session_plugin_t * session,
-    size_t channel_index,
-    void * callback_data,
-    pomelo_message_t * message,
-    pomelo_plugin_error_t error
-);
-
-
-/// @brief Process destroying session in main thread
-void pomelo_plugin_process_session_receive(
-    pomelo_session_plugin_receive_command_t * command
-);
-
-
-/// @brief Process destroying session in main thread
-void pomelo_plugin_process_session_receive_ex(
-    pomelo_plugin_impl_t * plugin,
-    pomelo_session_plugin_t * session,
-    size_t channel_index,
-    void * callback_data
-);
+/// @brief Destroy the plugin session
+void pomelo_session_plugin_destroy_deferred(pomelo_session_plugin_t * session);
 
 
 #ifdef __cplusplus

@@ -13,9 +13,7 @@ pomelo_adapter_t * pomelo_adapter_create(pomelo_adapter_options_t * options) {
 
     pomelo_adapter_t * adapter =
         pomelo_allocator_malloc_t(allocator, pomelo_adapter_t);
-    if (!adapter) {
-        return NULL;
-    }
+    if (!adapter) return NULL;
     memset(adapter, 0, sizeof(pomelo_adapter_t));
 
     adapter->allocator = allocator;
@@ -42,10 +40,13 @@ void * pomelo_adapter_get_extra(pomelo_adapter_t * adapter) {
 }
 
 
-uint8_t pomelo_adapter_get_capability(pomelo_adapter_t * adapter) {
+uint32_t pomelo_adapter_get_capability(pomelo_adapter_t * adapter) {
     (void) adapter;
     // This adapter only supports encrypted packets
-    return POMELO_ADAPTER_CAPABILITY_ENCRYPTED;
+    return (
+        POMELO_ADAPTER_CAPABILITY_SERVER_ENCRYPTED |
+        POMELO_ADAPTER_CAPABILITY_CLIENT_ENCRYPTED
+    );
 }
 
 
@@ -78,8 +79,7 @@ int pomelo_adapter_stop(pomelo_adapter_t * adapter) {
 int pomelo_adapter_send(
     pomelo_adapter_t * adapter,
     pomelo_address_t * address,
-    pomelo_packet_t * packet,
-    void * callback_data,
+    pomelo_buffer_view_t * view,
     bool encrypted
 ) {
     assert(adapter != NULL);
@@ -89,38 +89,17 @@ int pomelo_adapter_send(
 
     // Dispatch incoming message
     if (adapter->send_handler) {
-        adapter->send_handler(address, packet);
+        adapter->send_handler(address, view);
     }
 
-    // Call the callback first
-    pomelo_adapter_on_sent(adapter, callback_data, 0);
     return 0;
 }
+
 
 void pomelo_adapter_recv(
     pomelo_adapter_t * adapter,
     pomelo_address_t * address,
-    pomelo_packet_t * packet
+    pomelo_buffer_view_t * view
 ) {
-    pomelo_buffer_vector_t buffer_vector = { 0 };
-    pomelo_adapter_on_alloc(adapter, &buffer_vector);
-    size_t length = packet->header.position + packet->body.position;
-    if (buffer_vector.length < length) {
-        pomelo_adapter_on_recv(adapter, address, &buffer_vector, -1, true);
-        return;
-    }
-
-    memcpy(
-        buffer_vector.data,
-        packet->header.data,
-        packet->header.position
-    );
-    memcpy(
-        buffer_vector.data + packet->header.position,
-        packet->body.data,
-        packet->body.position
-    );
-
-    buffer_vector.length = length;
-    pomelo_adapter_on_recv(adapter, address, &buffer_vector, 0, true);
+    pomelo_adapter_on_recv(adapter, address, view, true);
 }

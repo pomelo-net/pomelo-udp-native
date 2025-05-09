@@ -5,6 +5,7 @@
 #include "peer.h"
 #include "client.h"
 #include "server.h"
+#include "context.h"
 
 
 /* -------------------------------------------------------------------------- */
@@ -14,32 +15,38 @@
 
 int64_t pomelo_peer_client_id(pomelo_protocol_peer_t * peer) {
     assert(peer != NULL);
-
     return peer->client_id;
 }
 
 
 pomelo_address_t * pomelo_peer_address(pomelo_protocol_peer_t * peer) {
     assert(peer != NULL);
-
     return &peer->address;
 }
 
 
 int pomelo_protocol_peer_send(
     pomelo_protocol_peer_t * peer,
-    pomelo_buffer_t * buffer,
-    size_t offset,
-    size_t length
+    pomelo_buffer_view_t * views,
+    size_t nviews
 ) {
     assert(peer != NULL);
-    return pomelo_protocol_socket_send(
-        peer->socket,
-        peer,
-        buffer,
-        offset,
-        length
-    );
+    return pomelo_protocol_socket_send(peer->socket, peer, views, nviews);
+}
+
+
+void * pomelo_protocol_peer_get_extra(pomelo_protocol_peer_t * peer) {
+    assert(peer != NULL);
+    return peer->extra;
+}
+
+
+void pomelo_protocol_peer_set_extra(
+    pomelo_protocol_peer_t * peer,
+    void * data
+) {
+    assert(peer != NULL);
+    peer->extra = data;
 }
 
 
@@ -47,14 +54,13 @@ int pomelo_protocol_peer_send(
 /*                               Private API                                  */
 /* -------------------------------------------------------------------------- */
 
-int pomelo_protocol_peer_init(
+int pomelo_protocol_peer_on_alloc(
     pomelo_protocol_peer_t * peer,
-    pomelo_protocol_socket_t * socket
+    pomelo_protocol_context_t * context
 ) {
     assert(peer != NULL);
-    assert(socket != NULL);
-
-    memset(peer, 0, sizeof(pomelo_protocol_peer_t));
+    assert(context != NULL);
+    peer->context = context;
 
     // Reset the replay protector
     memset(
@@ -63,74 +69,100 @@ int pomelo_protocol_peer_init(
         sizeof(peer->replay_protector.received_sequence)
     );
 
-    peer->allocator = socket->allocator;
-    peer->socket = socket;
-    pomelo_rtt_calculator_init(&peer->rtt);
+    pomelo_allocator_t * allocator = context->allocator;
 
-    // Create sending passes list
+    // Create sending sender list
     pomelo_list_options_t list_options;
-    pomelo_list_options_init(&list_options);
-    list_options.allocator = socket->allocator;
-    list_options.element_size = sizeof(pomelo_protocol_send_pass_t *);
+    memset(&list_options, 0, sizeof(pomelo_list_options_t));
+    list_options.allocator = allocator;
+    list_options.element_size = sizeof(pomelo_protocol_sender_t *);
+    peer->senders = pomelo_list_create(&list_options);
+    if (!peer->senders) return -1; // Failed to create new list
 
-    peer->send_passes = pomelo_list_create(&list_options);
-    if (!peer->send_passes) {
-        pomelo_protocol_peer_cleanup(peer);
-        return -1;
-    }
-
-    // Create receiving passes list
-    pomelo_list_options_init(&list_options);
-    list_options.allocator = socket->allocator;
-    list_options.element_size = sizeof(pomelo_protocol_recv_pass_t *);
-    
-    peer->recv_passes = pomelo_list_create(&list_options);
-    if (!peer->recv_passes) {
-        pomelo_protocol_peer_cleanup(peer);
-        return -1;
-    }
+    // Create receiving receiver list
+    memset(&list_options, 0, sizeof(pomelo_list_options_t));
+    list_options.allocator = allocator;
+    list_options.element_size = sizeof(pomelo_protocol_receiver_t *);
+    peer->receivers = pomelo_list_create(&list_options);
+    if (!peer->receivers) return -1; // Failed to create new list
 
     return 0;
 }
 
 
-void pomelo_protocol_peer_reset(pomelo_protocol_peer_t * peer) {
+int pomelo_protocol_peer_init(
+    pomelo_protocol_peer_t * peer,
+    pomelo_protocol_peer_info_t * info
+) {
     assert(peer != NULL);
+    assert(info != NULL);
+    pomelo_protocol_context_t * context = peer->context;
 
-    pomelo_allocator_t * allocator = peer->allocator;
-    pomelo_protocol_socket_t * socket = peer->socket;
-    pomelo_list_t * send_passes = peer->send_passes;
-    pomelo_list_t * recv_passes = peer->recv_passes;
+    peer->socket = info->socket;
+    peer->created_time_ns = info->created_time_ns;
 
-    memset(peer, 0, sizeof(pomelo_protocol_peer_t));
-    memset(
-        peer->replay_protector.received_sequence,
-        0xff,
-        sizeof(peer->replay_protector.received_sequence)
+    // Acquire new codec context
+    peer->crypto_ctx = pomelo_protocol_context_acquire_crypto_context(context);
+    if (!peer->crypto_ctx) return -1; // Failed to acquire new crypto context
+
+    // Initialize the disconnect task
+    pomelo_sequencer_task_init(
+        &peer->disconnect_task,
+        (pomelo_sequencer_callback) pomelo_protocol_peer_disconnect_deferred,
+        peer
     );
 
-    peer->allocator = allocator;
-    peer->socket = socket;
-    peer->send_passes = send_passes;
-    peer->recv_passes = recv_passes;
-    pomelo_rtt_calculator_init(&peer->rtt);
-
-    pomelo_list_clear(peer->send_passes);
-    pomelo_list_clear(peer->recv_passes);
+    return 0;
 }
 
 
 void pomelo_protocol_peer_cleanup(pomelo_protocol_peer_t * peer) {
     assert(peer != NULL);
 
-    if (peer->send_passes) {
-        pomelo_list_destroy(peer->send_passes);
-        peer->send_passes = NULL;
+    peer->extra = NULL;
+    peer->client_id = 0;
+    memset(&peer->address, 0, sizeof(peer->address));
+    peer->socket = NULL;
+    peer->state = POMELO_PROTOCOL_PEER_DISCONNECTED;
+    peer->last_recv_time = 0;
+    peer->last_recv_time_keep_alive = 0;
+    peer->timeout_ns = 0;
+    peer->sequence_number = 0;
+    memset(
+        peer->replay_protector.received_sequence,
+        0xff,
+        sizeof(peer->replay_protector.received_sequence)
+    );
+
+    // Unref the codec context
+    if (peer->crypto_ctx) {
+        pomelo_reference_unref(&peer->crypto_ctx->ref);
+        peer->crypto_ctx = NULL;
     }
 
-    if (peer->recv_passes) {
-        pomelo_list_destroy(peer->recv_passes);
-        peer->recv_passes = NULL;
+    peer->created_time_ns = 0;
+
+    pomelo_list_clear(peer->senders);
+    pomelo_list_clear(peer->receivers);
+
+    peer->entry = NULL;
+    peer->flags = 0;
+    peer->remain_redundant_disconnect = 0;
+    memset(peer->user_data, 0, sizeof(peer->user_data));
+}
+
+
+void pomelo_protocol_peer_on_free(pomelo_protocol_peer_t * peer) {
+    assert(peer != NULL);
+
+    if (peer->senders) {
+        pomelo_list_destroy(peer->senders);
+        peer->senders = NULL;
+    }
+
+    if (peer->receivers) {
+        pomelo_list_destroy(peer->receivers);
+        peer->receivers = NULL;
     }
 }
 
@@ -144,12 +176,10 @@ int pomelo_protocol_peer_protect_replay(
     pomelo_protocol_replay_protector_t * protector = &peer->replay_protector;
     if (sequence_number < protector->most_recent_sequence) {
         uint64_t delta = protector->most_recent_sequence - sequence_number;
-        if (delta > POMELO_REPlAY_PROTECTED_BUFFER_SIZE) {
-            return 0;
-        }
+        if (delta > POMELO_REPLAY_PROTECTED_BUFFER_SIZE) return -1;
     }
 
-    uint64_t index = sequence_number % POMELO_REPlAY_PROTECTED_BUFFER_SIZE;
+    uint64_t index = sequence_number % POMELO_REPLAY_PROTECTED_BUFFER_SIZE;
     uint64_t received = protector->received_sequence[index];
 
     if (received == UINT64_MAX || received < sequence_number) {
@@ -159,72 +189,33 @@ int pomelo_protocol_peer_protect_replay(
             protector->most_recent_sequence = sequence_number;
         }
 
-        return 1;
+        return 0;
     }
 
-    return 0;
+    return -1;
 }
 
 
-uint64_t pomelo_protocol_peer_next_ping_sequence(
+void pomelo_protocol_peer_cancel_senders_and_receivers(
     pomelo_protocol_peer_t * peer
 ) {
     assert(peer != NULL);
 
-    uint64_t now = pomelo_platform_hrtime(peer->socket->platform);
-    pomelo_rtt_entry_t * entry =
-        pomelo_rtt_calculator_next_entry(&peer->rtt, now);
-
-    return entry->sequence;
-}
-
-
-void pomelo_protocol_peer_receive_pong(
-    pomelo_protocol_peer_t * peer,
-    pomelo_packet_pong_t * packet,
-    uint64_t recv_time
-) {
-    assert(peer != NULL);
-    assert(packet != NULL);
-
-    pomelo_rtt_entry_t * entry =
-        pomelo_rtt_calculator_entry(&peer->rtt, packet->ping_sequence);
-    if (!entry) {
-        return;
+    // Cancel all senders
+    pomelo_list_t * senders = peer->senders;
+    pomelo_protocol_sender_t * sender = NULL;
+    while (pomelo_list_pop_front(senders, &sender) == 0) {
+        sender->entry = NULL; // The entry is already removed
+        pomelo_protocol_sender_cancel(sender);
     }
-    uint64_t send_time = entry->time;
 
-    // Update RTT 
-    pomelo_rtt_calculator_submit_entry(
-        &peer->rtt,
-        entry,
-        recv_time,              // t3
-        packet->pong_delta_time // t2 - t1
-    );
-
-    // Then sync time
-    pomelo_protocol_socket_sync_time(
-        peer->socket,
-        send_time,                // t0
-        packet->ping_recv_time,   // t1
-        packet->pong_delta_time,  // t2 - t1
-        recv_time                 // t3
-    );
-}
-
-
-void pomelo_protocol_peer_terminate_passes(pomelo_protocol_peer_t * peer) {
-    assert(peer != NULL);
-    pomelo_protocol_send_pass_t * send_pass = NULL;
-    pomelo_protocol_recv_pass_t * recv_pass = NULL;
-
-    pomelo_list_for(peer->send_passes, send_pass, pomelo_protocol_send_pass_t *,
-        { send_pass->flags |= POMELO_PROTOCOL_PASS_FLAG_TERMINATED; }
-    );
-
-    pomelo_list_for(peer->recv_passes, recv_pass, pomelo_protocol_recv_pass_t *,
-        { recv_pass->flags |= POMELO_PROTOCOL_PASS_FLAG_TERMINATED; }
-    );
+    // Cancel all receivers
+    pomelo_list_t * receivers = peer->receivers;
+    pomelo_protocol_receiver_t * receiver = NULL;
+    while (pomelo_list_pop_front(receivers, &receiver) == 0) {
+        receiver->entry = NULL; // The entry is already removed
+        pomelo_protocol_receiver_cancel(receiver);
+    }
 }
 
 
@@ -244,32 +235,13 @@ pomelo_address_t * pomelo_protocol_peer_get_address(
 
 int pomelo_protocol_peer_disconnect(pomelo_protocol_peer_t * peer) {
     assert(peer != NULL);
-    pomelo_protocol_socket_t * socket = peer->socket;
-
-    switch (socket->mode) {
-        case POMELO_PROTOCOL_SOCKET_MODE_SERVER:
-            return pomelo_protocol_server_disconnect_peer(
-                (pomelo_protocol_server_t *) socket,
-                peer
-            );
-        
-        case POMELO_PROTOCOL_SOCKET_MODE_CLIENT:
-            return pomelo_protocol_client_disconnect_peer(
-                (pomelo_protocol_client_t *) socket,
-                peer
-            );
-    }
-
-    return -1;
+    pomelo_sequencer_submit(peer->socket->sequencer, &peer->disconnect_task);
+    // => pomelo_protocol_peer_disconnect_deferred()
+    return 0;
 }
 
 
-int pomelo_protocol_peer_rtt(
-    pomelo_protocol_peer_t * peer,
-    uint64_t * mean,
-    uint64_t * variance
-) {
+void pomelo_protocol_peer_disconnect_deferred(pomelo_protocol_peer_t * peer) {
     assert(peer != NULL);
-    pomelo_rtt_calculator_get(&peer->rtt, mean, variance);
-    return 0;
+    pomelo_protocol_socket_disconnect_peer(peer->socket, peer);
 }

@@ -1,33 +1,32 @@
 #ifndef POMELO_API_SOCKET_SRC_H
 #define POMELO_API_SOCKET_SRC_H
 #include "pomelo/api.h"
+#include "pomelo/constants.h"
+#include "base/extra.h"
+#include "base/sequencer.h"
 #include "protocol/protocol.h"
 #include "delivery/delivery.h"
+#include "utils/array.h"
 #include "utils/list.h"
-#include "base/extra.h"
-
-
-#define POMELO_SOCKET_COMPONENT_PROTOCOL_SOCKET       (1 << 0)
-#define POMELO_SOCKET_COMPONENT_DELIVERY_TRANSPORTER  (1 << 1)
-#define POMELO_SOCKET_COMPONENT_PLUGINS               (1 << 2)
-#define POMELO_SOCKET_COMPONENT_ALL (                                          \
-    POMELO_SOCKET_COMPONENT_PROTOCOL_SOCKET |                                  \
-    POMELO_SOCKET_COMPONENT_DELIVERY_TRANSPORTER |                             \
-    POMELO_SOCKET_COMPONENT_PLUGINS                                            \
-)
-
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 
+/// @brief The callback function for disconnected event
+typedef void (*pomelo_socket_on_disconnected_finalize_cb)(
+    pomelo_socket_t * socket,
+    pomelo_session_t * session
+);
+
+
 struct pomelo_socket_s {
     /// @brief The extra data
     pomelo_extra_t extra;
 
-    /// @brief The allocator of socket
-    pomelo_allocator_t * allocator;
+    /// @brief The flags of socket
+    uint32_t flags;
 
     /// @brief The context
     pomelo_context_t * context;
@@ -35,17 +34,8 @@ struct pomelo_socket_s {
     /// @brief The platform
     pomelo_platform_t * platform;
 
-    /// @brief Task group
-    pomelo_platform_task_group_t * task_group;
-
     /// @brief The protocol socket
     pomelo_protocol_socket_t * protocol_socket;
-
-    /// @brief The transporter
-    pomelo_delivery_transporter_t * transporter;
-
-    /// @brief The pool of built-in sessions
-    pomelo_pool_t * builtin_session_pool;
 
     /// @brief The state of socket
     pomelo_socket_state state;
@@ -56,11 +46,8 @@ struct pomelo_socket_s {
     /// @brief The flag store the stopped components
     uint8_t stopped_components;
 
-    /// @brief The number of channels
-    size_t nchannels;
-
     /// @brief The array of channel modes
-    pomelo_channel_mode * channel_modes;
+    pomelo_array_t * channel_modes;
 
     /// @brief The counter for session signature
     uint64_t session_signature_generator;
@@ -68,13 +55,20 @@ struct pomelo_socket_s {
     /// @brief The private key for server
     uint8_t private_key[POMELO_KEY_BYTES];
 
-    /* Plugin parts */
+    /// @brief The adapter of socket
+    pomelo_adapter_t * adapter;
 
-    /// @brief Attached plugins of this socket
-    pomelo_list_t * attached_plugins;
+    /// @brief The heartbeat
+    pomelo_delivery_heartbeat_t * heartbeat;
 
-    /// @brief Pool of detaching commands
-    pomelo_pool_t * detach_commands_pool;
+    /// @brief The sequencer
+    pomelo_sequencer_t sequencer;
+
+    /// @brief The stop task of socket
+    pomelo_sequencer_task_t stop_task;
+
+    /// @brief The destroy task of socket
+    pomelo_sequencer_task_t destroy_task;
 };
 
 
@@ -83,22 +77,26 @@ struct pomelo_socket_s {
 /* -------------------------------------------------------------------------- */
 
 
-/// @brief Process after all components have been stopped
-void pomelo_socket_stop_deferred(pomelo_socket_t * socket);
-
-
-/// @brief Process when an component is stopped
-void pomelo_socket_process_stopped_component(
+/// @brief On allocated callback
+int pomelo_socket_on_alloc(
     pomelo_socket_t * socket,
-    uint8_t component_mask
+    pomelo_context_t * context
 );
 
 
-/// @brief Process when the protocol socket has been stop without request
-void pomelo_socket_process_stopped_component_unexpectedly(
+/// @brief On free callback
+void pomelo_socket_on_free(pomelo_socket_t * socket);
+
+
+/// @brief Initialize the socket
+int pomelo_socket_init(
     pomelo_socket_t * socket,
-    uint8_t component_mask
+    pomelo_socket_options_t * options
 );
+
+
+/// @brief Cleanup the socket
+void pomelo_socket_cleanup(pomelo_socket_t * socket);
 
 
 /// @brief Add session to socket sessions list
@@ -113,6 +111,41 @@ void pomelo_socket_remove_session(
     pomelo_socket_t * socket,
     pomelo_session_t * session
 );
+
+
+/// @brief Dispatch the send result
+void pomelo_socket_dispatch_send_result(
+    pomelo_socket_t * socket,
+    pomelo_message_t * message
+);
+
+
+/// @brief Send message to builtin sessions
+int pomelo_socket_send_builtin(
+    pomelo_socket_t * socket,
+    pomelo_message_t * message,
+    size_t channel_index,
+    pomelo_session_t ** sessions,
+    size_t nsessions
+);
+
+
+/// @brief Send message to plugin sessions
+size_t pomelo_socket_send_plugin(
+    pomelo_socket_t * socket,
+    pomelo_message_t * message,
+    size_t channel_index,
+    pomelo_session_t ** sessions,
+    size_t nsessions
+);
+
+
+/// @brief The deferred destroy function
+void pomelo_socket_destroy_deferred(pomelo_socket_t * socket);
+
+
+/// @brief The deferred stop function
+void pomelo_socket_stop_deferred(pomelo_socket_t * socket);
 
 
 #ifdef __cplusplus

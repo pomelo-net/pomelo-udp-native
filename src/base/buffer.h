@@ -1,14 +1,18 @@
 #ifndef POMELO_BASE_BUFFER_SRC_H
 #define POMELO_BASE_BUFFER_SRC_H
+#include "pomelo/statistic/statistic-buffer.h"
 #include "utils/pool.h"
 #include "ref.h"
-#include "pomelo/statistic/statistic-buffer.h"
 
 
 /// The default buffer size of local-thread buffer context.
 /// The local thread buffer context will keep some buffers to make the
 /// acquisition faster.
 #define POMELO_BUFFER_CONTEXT_SHARED_BUFFER_DEFAULT_SIZE 128
+
+/// @brief Calculate the length of the buffer data for wrapping.
+#define POMELO_BUFFER_CALC_WRAP_LENGTH(capacity)                               \
+    ((capacity) + sizeof(pomelo_buffer_t))
 
 
 #ifdef __cplusplus
@@ -26,8 +30,6 @@ typedef struct pomelo_buffer_context_root_s pomelo_buffer_context_root_t;
 typedef struct pomelo_buffer_context_root_options_s
     pomelo_buffer_context_root_options_t;
 
-#ifdef POMELO_MULTI_THREAD
-
 /// @brief The non-thread safe buffer context for one and only one thread.
 typedef struct pomelo_buffer_context_shared_s pomelo_buffer_context_shared_t;
 
@@ -35,10 +37,11 @@ typedef struct pomelo_buffer_context_shared_s pomelo_buffer_context_shared_t;
 typedef struct pomelo_buffer_context_shared_options_s
     pomelo_buffer_context_shared_options_t;
 
-#endif // POMELO_MULTI_THREAD
-
 /// @brief The buffer with extra information
 typedef struct pomelo_buffer_s pomelo_buffer_t;
+
+/// @brief The buffer view
+typedef struct pomelo_buffer_view_s pomelo_buffer_view_t;
 
 
 /// @brief The buffer acquiring function
@@ -55,11 +58,17 @@ typedef void (*pomelo_buffer_context_release_fn)(
 /// @brief Statistic function of buffer context
 typedef void (*pomelo_buffer_context_statistic_fn)(
     pomelo_buffer_context_t * context,
-    pomelo_statistic_buffer_context_t * statistic
+    pomelo_statistic_buffer_t * statistic
 );
+
+/// @brief Finalize function of buffer
+typedef void (*pomelo_buffer_finalize_fn)(pomelo_buffer_t * buffer);
 
 
 struct pomelo_buffer_context_s {
+    /// @brief The root context
+    pomelo_buffer_context_root_t * root;
+
     /// @brief Acquire new buffer
     pomelo_buffer_context_acquire_fn acquire;
 
@@ -92,30 +101,30 @@ struct pomelo_buffer_context_root_options_s {
 
     /// @brief The capacity of a buffer
     size_t buffer_capacity;
+
+    /// @brief Whether the buffer pool is synchronized
+    bool synchronized;
 };
 
-#ifdef POMELO_MULTI_THREAD
+
 struct pomelo_buffer_context_shared_s {
     /// @brief The interface of this context
     pomelo_buffer_context_t base;
-
-    /// @brief The root context
-    pomelo_buffer_context_root_t * root_context;
 
     /// @brief The allocator of this context
     pomelo_allocator_t * allocator;
 
     /// @brief The buffer pool of this context
-    pomelo_shared_pool_t * buffer_pool;
+    pomelo_pool_t * buffer_pool;
 };
-#endif // POMELO_MULTI_THREAD
+
 
 struct pomelo_buffer_context_shared_options_s {
     /// @brief The allocator
     pomelo_allocator_t * allocator;
 
-    /// @brief The global buffer context
-    pomelo_buffer_context_root_t * context;
+    /// @brief The original buffer context
+    pomelo_buffer_context_t * context;
 
     /// @brief The buffer size of local-thread buffer context
     size_t buffer_size;
@@ -137,109 +146,61 @@ struct pomelo_buffer_s {
 };
 
 
-/* -------------------------------------------------------------------------- */
-/*                             Global buffer APIs                             */
-/* -------------------------------------------------------------------------- */
+struct pomelo_buffer_view_s {
+    /// @brief The buffer of this view
+    pomelo_buffer_t * buffer;
 
-/// @brief Initialize options
-void pomelo_buffer_context_root_options_init(
+    /// @brief The offset of view
+    size_t offset;
+
+    /// @brief The length of view
+    size_t length;
+};
+
+
+/// @brief Create new root buffer context
+pomelo_buffer_context_t * pomelo_buffer_context_root_create(
     pomelo_buffer_context_root_options_t * options
 );
 
 
-/// @brief Create a data context
-pomelo_buffer_context_root_t * pomelo_buffer_context_root_create(
-    pomelo_buffer_context_root_options_t * options
-);
-
-
-/// @brief Destroy a data pool
-void pomelo_buffer_context_root_destroy(pomelo_buffer_context_root_t * context);
-
-
-/// @brief Acquire new buffer.
-/// The buffer ref counter will be set to 1.
-/// @param context The buffer context 
-/// @return New buffer or NULL on failure
-pomelo_buffer_t * pomelo_buffer_context_root_acquire(
-    pomelo_buffer_context_root_t * context
-);
-
-/// @brief Release a buffer
-void pomelo_buffer_context_root_release(
-    pomelo_buffer_context_root_t * context,
-    pomelo_buffer_t * buffer
-);
-
-/// @brief Get the statistic of buffer context
-void pomelo_buffer_context_root_statistic(
-    pomelo_buffer_context_root_t * context,
-    pomelo_statistic_buffer_context_t * statistic
-);
-
-
-/* -------------------------------------------------------------------------- */
-/*                        Shared buffer context APIs                          */
-/* -------------------------------------------------------------------------- */
-
-#ifdef POMELO_MULTI_THREAD
-
-/// @brief Initialize the local-thread buffer context options
-/// @param options The options
-void pomelo_buffer_context_shared_options_init(
+/// @brief Create new shared buffer context
+pomelo_buffer_context_t * pomelo_buffer_context_shared_create(
     pomelo_buffer_context_shared_options_t * options
 );
 
 
-/// @brief Create new local-thread buffer context
-/// @param options The creating options
-/// @return New local-thread buffer context or NULL on failure
-pomelo_buffer_context_shared_t * pomelo_buffer_context_shared_create(
-    pomelo_buffer_context_shared_options_t * options
-);
-
-
-/// @brief Destroy a local-thread buffer context
-void pomelo_buffer_context_shared_destroy(
-    pomelo_buffer_context_shared_t * context
-);
+/// @brief Destroy a buffer context
+void pomelo_buffer_context_destroy(pomelo_buffer_context_t * context);
 
 
 /// @brief Acquire new buffer.
 /// The buffer ref counter will be set to 1.
-/// @param context The buffer context 
+/// @param context The buffer context to acquire buffer from
 /// @return New buffer or NULL on failure
-pomelo_buffer_t * pomelo_buffer_context_shared_acquire(
-    pomelo_buffer_context_shared_t * context
+pomelo_buffer_t * pomelo_buffer_context_acquire(
+    pomelo_buffer_context_t * context
 );
 
-
-/// @brief Release a buffer
-void pomelo_buffer_context_shared_release(
-    pomelo_buffer_context_shared_t * context,
-    pomelo_buffer_t * buffer
-);
 
 /// @brief Get the statistic of buffer context
-void pomelo_buffer_context_shared_statistic(
-    pomelo_buffer_context_shared_t * context,
-    pomelo_statistic_buffer_context_t * statistic
+void pomelo_buffer_context_statistic(
+    pomelo_buffer_context_t * context,
+    pomelo_statistic_buffer_t * statistic
 );
 
-#endif // POMELO_MULTI_THREAD
 
 /* -------------------------------------------------------------------------- */
 /*                               Buffer APIs                                  */
 /* -------------------------------------------------------------------------- */
 
+
 /// @brief Increase the reference counter of buffer
-/// @return 0 on success or -1 on failure
-int pomelo_buffer_ref(pomelo_buffer_t * buffer);
+bool pomelo_buffer_ref(pomelo_buffer_t * buffer);
 
 
 /// @brief Decrease the reference counter of buffer
-/// @return 0 on success or -1 on failure
-int pomelo_buffer_unref(pomelo_buffer_t * buffer);
+void pomelo_buffer_unref(pomelo_buffer_t * buffer);
 
 
 /// @brief Change the buffer context
@@ -253,12 +214,22 @@ void pomelo_buffer_set_context(
 #define pomelo_buffer_from_data(data) (((pomelo_buffer_t *) (data)) - 1)
 
 
+/// @brief Wrap the buffer around the data.
+/// This will set the ref counter of the buffer to 1.
+/// @return New buffer or NULL on failure (not enough memory for buffer header)
+pomelo_buffer_t * pomelo_buffer_wrap(
+    void * data,
+    size_t capacity,
+    pomelo_buffer_finalize_fn finalize_fn
+);
+
+
 /* -------------------------------------------------------------------------- */
 /*                                Private APIs                                */
 /* -------------------------------------------------------------------------- */
 
 /// @brief Alloc callback for buffer
-int pomelo_buffer_alloc(
+int pomelo_buffer_on_alloc(
     pomelo_buffer_t * buffer,
     pomelo_buffer_context_root_t * context
 );
@@ -267,13 +238,62 @@ int pomelo_buffer_alloc(
 /// @brief Init callback for buffer
 int pomelo_buffer_init(
     pomelo_buffer_t * buffer,
-    pomelo_buffer_context_root_t * context
+    pomelo_buffer_context_t * context
 );
 
 
 /// @brief Finalize buffer before releasing to pool
-void pomelo_buffer_finalize(pomelo_buffer_t * buffer);
+void pomelo_buffer_on_finalize(pomelo_buffer_t * buffer);
 
+
+/// @brief Destroy a root buffer context
+void pomelo_buffer_context_root_destroy(pomelo_buffer_context_root_t * context);
+
+
+/// @brief Acquire new buffer from root context
+pomelo_buffer_t * pomelo_buffer_context_root_acquire(
+    pomelo_buffer_context_root_t * context
+);
+
+
+/// @brief Release a buffer to root context
+void pomelo_buffer_context_root_release(
+    pomelo_buffer_context_root_t * context,
+    pomelo_buffer_t * buffer
+);
+
+
+/// @brief Get the statistic of root buffer context
+void pomelo_buffer_context_root_statistic(
+    pomelo_buffer_context_root_t * context,
+    pomelo_statistic_buffer_t * statistic
+);
+
+
+/// @brief Destroy a shared buffer context
+void pomelo_buffer_context_shared_destroy(
+    pomelo_buffer_context_shared_t * context
+);
+
+
+/// @brief Acquire new buffer from shared buffer context
+pomelo_buffer_t * pomelo_buffer_context_shared_acquire(
+    pomelo_buffer_context_shared_t * context
+);
+
+
+/// @brief Release a buffer to shared buffer context
+void pomelo_buffer_context_shared_release(
+    pomelo_buffer_context_shared_t * context,
+    pomelo_buffer_t * buffer
+);
+
+
+/// @brief Get the statistic of shared buffer context
+void pomelo_buffer_context_shared_statistic(
+    pomelo_buffer_context_shared_t * context,
+    pomelo_statistic_buffer_t * statistic
+);
 
 #ifdef __cplusplus
 }

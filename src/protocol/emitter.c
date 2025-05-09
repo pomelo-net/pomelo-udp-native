@@ -1,107 +1,140 @@
 #include <assert.h>
 #include <string.h>
 #include "utils/macro.h"
-#include "pass.h"
-#include "socket.h"
+#include "sender.h"
 #include "emitter.h"
-
+#include "context.h"
+#include "client.h"
 
 /* -------------------------------------------------------------------------- */
 /*                            Frequent emitter                                */
 /* -------------------------------------------------------------------------- */
 
-void pomelo_protocol_emitter_init(pomelo_protocol_emitter_t * emitter) {
+
+int pomelo_protocol_emitter_init(
+    pomelo_protocol_emitter_t * emitter,
+    pomelo_protocol_emitter_options_t * options
+) {
     assert(emitter != NULL);
+    assert(options != NULL);
+
     memset(emitter, 0, sizeof(pomelo_protocol_emitter_t));
+    emitter->client = options->client;
+    emitter->frequency = options->frequency;
+    emitter->limit = options->limit;
+    emitter->timeout_ms = options->timeout_ms;
+    emitter->trigger_cb = options->trigger_cb;
+    emitter->timeout_cb = options->timeout_cb;
+    emitter->limit_cb = options->limit_cb;
+
+    // Initialize the trigger task
+    pomelo_sequencer_task_init(
+        &emitter->trigger_task,
+        (pomelo_sequencer_callback) pomelo_protocol_emitter_on_triggered,
+        emitter
+    );
+
+    // Initialize the timeout task
+    pomelo_sequencer_task_init(
+        &emitter->timeout_task,
+        (pomelo_sequencer_callback) pomelo_protocol_emitter_on_timeout,
+        emitter
+    );
+
+    return 0;
+}
+
+
+static void emitter_on_triggered(pomelo_protocol_emitter_t * emitter) {
+    assert(emitter != NULL);
+    pomelo_sequencer_submit(
+        emitter->client->socket.sequencer,
+        &emitter->trigger_task
+    );
+}
+
+
+static void emitter_on_timeout(pomelo_protocol_emitter_t * emitter) {
+    assert(emitter != NULL);
+    pomelo_sequencer_submit(
+        emitter->client->socket.sequencer,
+        &emitter->timeout_task
+    );
 }
 
 
 int pomelo_protocol_emitter_start(pomelo_protocol_emitter_t * emitter) {
     assert(emitter != NULL);
-
-    if (emitter->flags & POMELO_PROTOCOL_EMITTER_FLAG_RUNNING) {
-        // The emitter has been running
-        return -1;
+    if (emitter->running) {
+        return -1; // The emitter has already been running
     }
 
-    pomelo_protocol_socket_t * socket = emitter->socket;
-    pomelo_platform_t * platform = socket->platform;
-    pomelo_packet_t * packet = emitter->packet;
+    // Check parameters
+    if (emitter->frequency == 0) {
+        return -1; // Invalid frequency
+    }
 
-    // Reset the flag & re-attach the buffer
-    emitter->flags &= ~POMELO_PROTOCOL_EMITTER_FLAG_ENCODED;
-    pomelo_packet_attach_buffer(packet, packet->buffer);
+    pomelo_protocol_client_t * client = emitter->client;
+    pomelo_platform_t * platform = client->socket.platform;
 
-    emitter->trigger_timer = pomelo_platform_timer_start(
+    int ret = pomelo_platform_timer_start(
         platform,
-        (pomelo_platform_timer_cb) pomelo_protocol_emitter_on_triggered,
+        (pomelo_platform_timer_entry) emitter_on_triggered,
         0, // No timeout
         POMELO_FREQ_TO_MS(emitter->frequency),
-        emitter
+        emitter,
+        &emitter->trigger_timer
     );
-    
-    if (!emitter->trigger_timer) {
-        return -1;
-    }
 
-    if (emitter->timeout_ms > 0) {
-        emitter->timeout_timer = pomelo_platform_timer_start(
+    if (ret < 0) {
+        pomelo_protocol_emitter_stop(emitter);
+        return -1; // Failed to start timer
+    }
+    
+    // Check timer
+    if (emitter->timeout_ms > 0 && emitter->timeout_cb) {
+        ret = pomelo_platform_timer_start(
             platform,
-            (pomelo_platform_timer_cb) pomelo_protocol_emitter_on_timed_out,
+            (pomelo_platform_timer_entry) emitter_on_timeout,
             emitter->timeout_ms,
-            0, // No repeat
-            emitter
+            emitter->timeout_ms, // With repeat
+            emitter,
+            &emitter->timeout_timer
         );
 
-        if (!emitter->timeout_timer) {
-            pomelo_platform_timer_stop(platform, emitter->trigger_timer);
-            emitter->trigger_timer = NULL;
-            return -1;
+        if (ret < 0) {
+            pomelo_protocol_emitter_stop(emitter);
+            return -1; // Failed to start timer
         }
     }
 
     emitter->trigger_counter = 0;
-    emitter->flags |= POMELO_PROTOCOL_EMITTER_FLAG_RUNNING;
+    emitter->running = true;
     return 0;
 }
 
 
-void pomelo_protocol_emitter_on_triggered(
-    pomelo_protocol_emitter_t * emitter
-) {
+void pomelo_protocol_emitter_stop(pomelo_protocol_emitter_t * emitter) {
     assert(emitter != NULL);
 
-    if (emitter->flags & POMELO_PROTOCOL_EMITTER_FLAG_PROCESSING) {
-        return; // The emitter has been processing, ignore current trigger
+    if (!emitter->running) {
+        return; // The emitter has already been stopped
     }
 
-    pomelo_protocol_socket_t * socket = emitter->socket;
-    pomelo_protocol_send_pass_t * pass =
-        pomelo_pool_acquire(socket->pools.send_pass);
-    if (!pass) {
-        return; // Failed to acquire new sending pass
-    }
-    
-    // Set running flag
-    emitter->flags |= POMELO_PROTOCOL_EMITTER_FLAG_PROCESSING;
+    // Just stop & destroy the timer
+    pomelo_platform_t * platform = emitter->client->socket.platform;
+    pomelo_platform_timer_stop(platform, &emitter->trigger_timer);
+    pomelo_platform_timer_stop(platform, &emitter->timeout_timer);
+    emitter->running = false;
+}
 
-    // Call the callback
+
+void pomelo_protocol_emitter_on_triggered(pomelo_protocol_emitter_t * emitter) {
+    assert(emitter != NULL);
+
     if (emitter->trigger_cb) {
-        emitter->trigger_cb(socket, emitter);
+        emitter->trigger_cb(emitter->client);
     }
-
-    if (emitter->flags & POMELO_PROTOCOL_EMITTER_FLAG_ENCODED) {
-        // The packet has been encrypted
-        pass->flags |= POMELO_PROTOCOL_PASS_FLAG_NO_PROCESS;
-    }
-
-    if (socket->no_encrypt) {
-        pass->flags |= POMELO_PROTOCOL_PASS_FLAG_NO_ENCRYPT;
-    }
-
-    pass->socket = socket;
-    pass->packet = emitter->packet;
-    pass->peer = emitter->peer;
 
     emitter->trigger_counter++;
     if (emitter->limit > 0 && emitter->limit == emitter->trigger_counter) {
@@ -109,66 +142,14 @@ void pomelo_protocol_emitter_on_triggered(
         pomelo_protocol_emitter_stop(emitter);
 
         // Then call the callback
-        if (emitter->limit_reached_cb) {
-            emitter->limit_reached_cb(emitter->socket, emitter);
+        if (emitter->limit_cb) {
+            emitter->limit_cb(emitter->client);
         }
     }
-
-    pomelo_protocol_send_pass_submit(pass);
-    // => pomelo_protocol_emitter_on_sent
 }
 
 
-void pomelo_protocol_emitter_on_timed_out(
-    pomelo_protocol_emitter_t * emitter
-) {
+void pomelo_protocol_emitter_on_timeout(pomelo_protocol_emitter_t * emitter) {
     assert(emitter != NULL);
-
-    emitter->timeout_timer = NULL;
-    pomelo_protocol_emitter_stop(emitter);
-
-    // Call the callback
-    if (emitter->timeout_cb) {
-        emitter->timeout_cb(emitter->socket, emitter);
-    }
-}
-
-
-void pomelo_protocol_emitter_on_sent(pomelo_protocol_emitter_t * emitter) {
-    assert(emitter != NULL);
-    emitter->flags &= ~POMELO_PROTOCOL_EMITTER_FLAG_PROCESSING;
-    if (emitter->flags & POMELO_PROTOCOL_EMITTER_FLAG_ENCODE_ONCE) {
-        emitter->flags |= POMELO_PROTOCOL_EMITTER_FLAG_ENCODED;
-    }
-}
-
-
-int pomelo_protocol_emitter_stop(pomelo_protocol_emitter_t * emitter) {
-    assert(emitter != NULL);
-
-    if (!(emitter->flags & POMELO_PROTOCOL_EMITTER_FLAG_RUNNING)) {
-        return -1;
-    }
-
-    pomelo_platform_t * platform = emitter->socket->platform;
-
-    // Just stop & destroy the timer
-    pomelo_platform_timer_stop(platform, emitter->trigger_timer);
-    emitter->trigger_timer = NULL;
-
-    if (emitter->timeout_timer) {
-        pomelo_platform_timer_stop(platform, emitter->timeout_timer);
-        emitter->timeout_timer = NULL;
-    }
-
-    emitter->flags &= ~POMELO_PROTOCOL_EMITTER_FLAG_RUNNING;
-    return 0;
-}
-
-
-void pomelo_protocol_emitter_set_encode_once(
-    pomelo_protocol_emitter_t * emitter
-) {
-    assert(emitter != NULL);
-    emitter->flags |= POMELO_PROTOCOL_EMITTER_FLAG_ENCODE_ONCE;
+    emitter->timeout_cb(emitter->client);
 }

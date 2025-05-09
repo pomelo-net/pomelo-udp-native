@@ -4,14 +4,6 @@
 #include "plugin.h"
 
 
-void pomelo_plugin_manager_options_init(
-    pomelo_plugin_manager_options_t * options
-) {
-    assert(options != NULL);
-    memset(options, 0, sizeof(pomelo_plugin_manager_options_t));
-}
-
-
 pomelo_plugin_manager_t * pomelo_plugin_manager_create(
     pomelo_plugin_manager_options_t * options
 ) {
@@ -35,11 +27,10 @@ pomelo_plugin_manager_t * pomelo_plugin_manager_create(
     plugin_manager->allocator = allocator;
 
     // Create list of plugins
-    pomelo_list_options_t list_options;
-    pomelo_list_options_init(&list_options);
-
-    list_options.allocator = allocator;
-    list_options.element_size = sizeof(pomelo_plugin_t *);
+    pomelo_list_options_t list_options = {
+        .allocator = allocator,
+        .element_size = sizeof(pomelo_plugin_t *)
+    };
     pomelo_list_t * plugins = pomelo_list_create(&list_options);
     if (!plugins) {
         pomelo_plugin_manager_destroy(plugin_manager);
@@ -59,10 +50,10 @@ void pomelo_plugin_manager_destroy(pomelo_plugin_manager_t * plugin_manager) {
     assert(plugin_manager != NULL);
 
     // Destroy all plugins
-    pomelo_plugin_t * plugin;
-    pomelo_list_for(plugin_manager->plugins, plugin, pomelo_plugin_t *, {
+    pomelo_plugin_t * plugin = NULL;
+    while (pomelo_list_pop_front(plugin_manager->plugins, &plugin) == 0) {
         pomelo_plugin_destroy((pomelo_plugin_impl_t *) plugin);
-    });
+    }
 
     // Destroy list of plugins
     if (plugin_manager->plugins) {

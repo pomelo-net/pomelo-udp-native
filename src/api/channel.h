@@ -3,10 +3,12 @@
 #include "pomelo/api.h"
 #include "delivery/bus.h"
 #include "base/extra.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+
+typedef struct pomelo_channel_info_s pomelo_channel_info_t;
 
 
 /// @brief Sending function of channel
@@ -43,6 +45,15 @@ struct pomelo_channel_methods_s {
 };
 
 
+struct pomelo_channel_info_s {
+    /// @brief The session
+    pomelo_session_t * session;
+
+    /// @brief The channel mode
+    pomelo_channel_methods_t * methods;
+};
+
+
 struct pomelo_channel_s {
     /// @brief The extra data of channel
     pomelo_extra_t extra;
@@ -58,14 +69,12 @@ struct pomelo_channel_s {
 /// @brief Initialize channel
 int pomelo_channel_init(
     pomelo_channel_t * channel,
-    pomelo_session_t * session
+    pomelo_channel_info_t * info
 );
 
-/// @brief Finalize channel
-int pomelo_channel_finalize(
-    pomelo_channel_t * channel,
-    pomelo_session_t * session
-);
+
+/// @brief Cleanup channel
+void pomelo_channel_cleanup(pomelo_channel_t * channel);
 
 
 #ifdef __cplusplus

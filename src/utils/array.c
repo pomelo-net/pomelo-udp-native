@@ -20,18 +20,9 @@
 #endif
 
 
-void pomelo_array_options_init(pomelo_array_options_t * options) {
-    assert(options != NULL);
-    memset(options, 0, sizeof(pomelo_array_options_t));
-}
-
-
 pomelo_array_t * pomelo_array_create(pomelo_array_options_t * options) {
     assert(options != NULL);
-
-    if (options->element_size <= 0) {
-        return NULL;
-    }
+    if (options->element_size <= 0) return NULL;
 
     pomelo_allocator_t * allocator = options->allocator;
     if (!allocator) {
@@ -40,10 +31,7 @@ pomelo_array_t * pomelo_array_create(pomelo_array_options_t * options) {
 
     pomelo_array_t * array =
         pomelo_allocator_malloc_t(allocator, pomelo_array_t);
-
-    if (!array) {
-        return NULL;
-    }
+    if (!array) return NULL;
 
     memset(array, 0, sizeof(pomelo_array_t));
     array->allocator = allocator;
@@ -116,23 +104,24 @@ int pomelo_array_ensure_size(pomelo_array_t * array, size_t size) {
 }
 
 
-int pomelo_array_append_p(pomelo_array_t * array, void * p_element) {
+void * pomelo_array_append_ptr(pomelo_array_t * array, void * p_element) {
     assert(array != NULL);
-    assert(p_element != NULL);
     pomelo_array_check_signature(array);
 
     if (pomelo_array_ensure_size(array, array->size + 1) < 0) {
-        return -1;
+        return NULL; // Failed to ensure size
     }
 
-    size_t offset = (array->size++) * array->element_size;
-    memcpy(
-        (uint8_t *) array->elements + offset,
-        p_element,
-        array->element_size
-    );
+    size_t offset = array->size * array->element_size;
+    void * element = (uint8_t *) array->elements + offset;
+    if (p_element) {
+        memcpy(element, p_element, array->element_size);
+    } else {
+        memset(element, 0, array->element_size);
+    }
 
-    return 0;
+    array->size++;
+    return element;
 }
 
 
@@ -158,7 +147,7 @@ int pomelo_array_resize(pomelo_array_t * array, size_t new_size) {
 }
 
 
-void * pomelo_array_get_p(pomelo_array_t * array, size_t index) {
+void * pomelo_array_get_ptr(pomelo_array_t * array, size_t index) {
     assert(array != NULL);
     pomelo_array_check_signature(array);
 
@@ -188,20 +177,38 @@ int pomelo_array_get(pomelo_array_t * array, size_t index, void * p_value) {
 }
 
 
-int pomelo_array_set_p(pomelo_array_t * array, size_t index, void * p_value) {
+void * pomelo_array_set_ptr(
+    pomelo_array_t * array,
+    size_t index,
+    void * p_value
+) {
     assert(array != NULL);
     assert(p_value != NULL);
 
     if (index >= array->size) {
-        return -1; // Invalid index
+        return NULL; // Invalid index
     }
 
     // Copy the value
-    memcpy(
-        ((uint8_t *) array->elements) + index * array->element_size,
-        p_value,
-        array->element_size
-    );
+    void * element =
+        ((uint8_t *) array->elements) + index * array->element_size;
+    memcpy(element, p_value, array->element_size);
 
-    return 0;
+    return element;
+}
+
+
+void pomelo_array_fill_zero(pomelo_array_t * array) {
+    assert(array != NULL);
+    pomelo_array_check_signature(array);
+
+    if (array->size == 0) {
+        return; // Nothing to do
+    }
+
+    memset(
+        array->elements,
+        0, // Fill with zeroes
+        array->size * array->element_size
+    );
 }

@@ -8,25 +8,65 @@ extern "C" {
 #endif
 
 
-/// @brief The object pool implemented as a stack
+/// @brief The pool
 typedef struct pomelo_pool_s pomelo_pool_t;
+
+/// @brief The root pool
+typedef struct pomelo_pool_root_s pomelo_pool_root_t;
 
 /// @brief The pool element
 typedef struct pomelo_pool_element_s pomelo_pool_element_t;
 
 /// @brief The options for object pool
-typedef struct pomelo_pool_options_s pomelo_pool_options_t;
+typedef struct pomelo_pool_root_options_s pomelo_pool_root_options_t;
 
 /// @brief The shared pool.
 /// This is a buffered pool which uses another pool as its data pool.
-typedef struct pomelo_shared_pool_s pomelo_shared_pool_t;
+typedef struct pomelo_pool_shared_s pomelo_pool_shared_t;
 
 /// @brief The shared pool options
-typedef struct pomelo_shared_pool_options_s pomelo_shared_pool_options_t;
+typedef struct pomelo_pool_shared_options_s pomelo_pool_shared_options_t;
 
 /// @brief The element callback for pool. If this function returns 0, the pool
 /// process will continue or non-zero value will interrupt the process
-typedef int (*pomelo_pool_callback)(void * element, void * context);
+typedef int (*pomelo_pool_alloc_cb)(void * element, void * alloc_data);
+
+/// @brief The free callback for pool. This function will be called when the
+/// element is freed.
+typedef void (*pomelo_pool_free_cb)(void * element);
+
+/// @brief The cleanup callback for pool. This function will be called when the
+/// element is released.
+typedef void (*pomelo_pool_cleanup_cb)(void * element);
+
+/// @brief The initialize callback for pool. This function will be called when
+/// the element is initialized.
+typedef int (*pomelo_pool_init_cb)(void * element, void * init_data);
+
+
+/// @brief The acquire function for pool. This function will be called when the
+/// element is acquired.
+typedef void * (*pomelo_pool_acquire_fn)(
+    pomelo_pool_t * pool,
+    void * init_data
+);
+
+
+/// @brief The release function for pool. This function will be called when the
+/// element is released.
+typedef void (*pomelo_pool_release_fn)(pomelo_pool_t * pool, void * element);
+
+
+struct pomelo_pool_s {
+    /// @brief The root pool
+    pomelo_pool_root_t * root;
+
+    /// @brief The acquire function
+    pomelo_pool_acquire_fn acquire;
+
+    /// @brief The release function
+    pomelo_pool_release_fn release;
+};
 
 
 struct pomelo_pool_element_s {
@@ -43,7 +83,7 @@ struct pomelo_pool_element_s {
     pomelo_pool_element_t * allocated_prev;
 
     /// @brief The flags of elements.
-    uint8_t flags;
+    uint32_t flags;
 
 #ifndef NDEBUG
     /// @brief The signature for debugging
@@ -53,7 +93,11 @@ struct pomelo_pool_element_s {
     /* Hidden field: data */
 };
 
-struct pomelo_pool_s {
+
+struct pomelo_pool_root_s {
+    /// @brief The base pool
+    pomelo_pool_t base;
+
     /// @brief The allocator of pool
     pomelo_allocator_t * allocator;
 
@@ -72,24 +116,20 @@ struct pomelo_pool_s {
     /// @brief The head of all allocated elements
     pomelo_pool_element_t * allocated_elements;
 
-    /// @brief The initialize callback. This callback will be called once
-    /// right after the element is allocated.
-    pomelo_pool_callback allocate_callback;
+    /// @brief Optional allocate callback
+    pomelo_pool_alloc_cb on_alloc;
 
-    /// @brief The finalize callback. This callback will be called once right
-    /// before the element is freed (In destroy function of pool)
-    pomelo_pool_callback deallocate_callback;
+    /// @brief Optional free callback
+    pomelo_pool_free_cb on_free;
 
-    /// @brief Release callback. This callback is called every release call.
-    /// The return value of this function will be ignored.
-    pomelo_pool_callback release_callback;
+    /// @brief Optional initialize callback
+    pomelo_pool_init_cb on_init;
 
-    /// @brief Acquire callback. This callback is called every acquire call.
-    /// The return value of this function will be ignored.
-    pomelo_pool_callback acquire_callback;
+    /// @brief Optional cleanup callback
+    pomelo_pool_cleanup_cb on_cleanup;
 
-    /// @brief The context for element callbacks
-    void * callback_context;
+    /// @brief Data which is passed to the allocate callback
+    void * alloc_data;
 
     /// @brief Size of allocated elements list
     size_t allocated_size;
@@ -98,9 +138,9 @@ struct pomelo_pool_s {
     size_t available_size;
 
     /// @brief If this flag is set, the acquiring buffer will be initialize with
-    /// zero values. Using this flag when setting either alloc_callback or
-    /// dealloc_callback is probihited.
-    bool zero_initialized;
+    /// zero values. Using this flag when setting either on_free or on_alloc
+    /// is not allowed.
+    bool zero_init;
 
     /// @brief The mutex lock for this pool.
     /// Only available for synchronized pool.
@@ -117,7 +157,8 @@ struct pomelo_pool_s {
 
 };
 
-struct pomelo_pool_options_s {
+
+struct pomelo_pool_root_options_s {
     /// @brief The size of one element
     size_t element_size;
 
@@ -131,30 +172,25 @@ struct pomelo_pool_options_s {
     /// will be used
     pomelo_allocator_t * allocator;
 
-    /// @brief The initialize callback. This callback will be called once
-    /// right after the element is allocated. 
-    /// If NULL is set, no callback will be called.
-    pomelo_pool_callback allocate_callback;
+    /// @brief Optional allocate callback. Content of newly allocated elements
+    /// will be set to NULL before this callback is called.
+    pomelo_pool_alloc_cb on_alloc;
 
-    /// @brief The finalize callback. This callback will be called once right
-    /// before the element is freed (In destroy function of pool)
-    /// If NULL is set, no callback will be called.
-    pomelo_pool_callback deallocate_callback;
+    /// @brief Optional free callback
+    pomelo_pool_free_cb on_free;
 
-    /// @brief Release callback. If NULL is set, no callback will be called.
-    /// The return value of this function will be ignored.
-    pomelo_pool_callback release_callback;
+    /// @brief Optional initialize callback
+    pomelo_pool_init_cb on_init;
 
-    /// @brief Acquire callback. If NULL is set, no callback will be called.
-    /// The return value of this function will be ignored.
-    pomelo_pool_callback acquire_callback;
+    /// @brief Optional cleanup callback
+    pomelo_pool_cleanup_cb on_cleanup;
 
-    /// @brief The callback context
-    void * callback_context;
+    /// @brief Data which is passed to the allocate callback
+    void * alloc_data;
 
-    /// @brief If this flag is set, the acquiring buffer will be initialize with
-    /// zero values.
-    bool zero_initialized;
+    /// @brief If this flag is set, content of element will be set to NULL 
+    /// before on_init callback is called.
+    bool zero_init;
 
     /// @brief If this flag is set, the pool will become synchronized pool.
     /// It means that, acquiring & releasing will become atomic operators.
@@ -164,12 +200,13 @@ struct pomelo_pool_options_s {
     bool synchronized;
 };
 
-struct pomelo_shared_pool_s {
+
+struct pomelo_pool_shared_s {
+    /// @brief The base pool
+    pomelo_pool_t base;
+
     /// @brief The allocator of this pool (Not its elements)
     pomelo_allocator_t * allocator;
-
-    /// @brief The data pool of this shared pool
-    pomelo_pool_t * master_pool;
 
     /// @brief The buffer size of pool
     size_t buffers;
@@ -191,121 +228,143 @@ struct pomelo_shared_pool_s {
 
 };
 
-struct pomelo_shared_pool_options_s {
+
+struct pomelo_pool_shared_options_s {
     /// @brief The allocator
     pomelo_allocator_t * allocator;
 
-    /// @brief The master pool
-    pomelo_pool_t * master_pool;
+    /// @brief The referenced pool. This will be used to get the root pool.
+    /// The root pool must be synchronized.
+    pomelo_pool_t * origin_pool;
 
     /// @brief The buffer size of pool. Default is 16.
     /// If the number of elements in this pool decreases down to zero, it
-    /// will acquire (N - buffers size) elements from the master pool.
+    /// will acquire (N - buffers size) elements from the root pool.
     /// If the number of elements in this pool increases up to (2 * N), it will
-    /// release (N) elements to the master pool.
+    /// release (N) elements to the root pool.
     size_t buffers;
 };
 
+
 /* -------------------------------------------------------------------------- */
-/*                               Pool APIs                                    */
+/*                               Public APIs                                  */
 /* -------------------------------------------------------------------------- */
 
-/// @brief Set pomelo options to default
-void pomelo_pool_options_init(pomelo_pool_options_t * options);
+/// @brief Create new pool
+pomelo_pool_t * pomelo_pool_root_create(pomelo_pool_root_options_t * options);
 
-/// @brief Create new pool with options
-pomelo_pool_t * pomelo_pool_create(pomelo_pool_options_t * options);
+
+/// @brief Create new shared pool
+pomelo_pool_t * pomelo_pool_shared_create(
+    pomelo_pool_shared_options_t * options
+);
+
 
 /// @brief Destroy pool
 void pomelo_pool_destroy(pomelo_pool_t * pool);
 
-/// @brief Acquire a new element from pool
-/// @return Returns a new element or NULL if failed to allocate
-void * pomelo_pool_acquire(pomelo_pool_t * pool);
+
+/// @brief Acquire a new element from pool with init_data passed to on_init
+/// callback.
+void * pomelo_pool_acquire(pomelo_pool_t * pool, void * init_data);
+
 
 /// @brief Release an element to pool
 void pomelo_pool_release(pomelo_pool_t * pool, void * data);
 
+
 /// Get the number of in-use elements
 #define pomelo_pool_in_use(pool)                                               \
-    ((pool)->allocated_size - (pool)->available_size)
+    ((pool)->root->allocated_size - (pool)->root->available_size)
 
-
-/* -------------------------------------------------------------------------- */
-/*                            Shared pool APIs                                */
-/* -------------------------------------------------------------------------- */
-
-/// @brief Initialize shared pool creating options
-void pomelo_shared_pool_options_init(pomelo_shared_pool_options_t * options);
-
-/// @brief Create new shared pool
-pomelo_shared_pool_t * pomelo_shared_pool_create(
-    pomelo_shared_pool_options_t * options
-);
-
-/// @brief Destroy the shared pool.
-/// All holding elements will be released to the master pool
-void pomelo_shared_pool_destroy(pomelo_shared_pool_t * pool);
-
-/// @brief Acquire an element from this pool
-/// @return New element
-void * pomelo_shared_pool_acquire(pomelo_shared_pool_t * pool);
-
-/// @brief Release an element to this pool
-void pomelo_shared_pool_release(pomelo_shared_pool_t * pool, void * element);
 
 
 /* -------------------------------------------------------------------------- */
 /*                               Private APIs                                 */
 /* -------------------------------------------------------------------------- */
 
+
+/// @brief Destroy the pool
+void pomelo_pool_root_destroy(pomelo_pool_root_t * pool);
+
+
+/// @brief Acquire an element from the pool
+void * pomelo_pool_root_acquire(pomelo_pool_root_t * pool, void * init_data);
+
+
+/// @brief Release an element to the pool
+void pomelo_pool_root_release(pomelo_pool_root_t * pool, void * element);
+
+
+/// @brief Destroy the shared pool.
+/// All holding elements will be released to the master pool
+void pomelo_pool_shared_destroy(pomelo_pool_shared_t * pool);
+
+
+/// @brief Acquire an element with init_data passed to on_init callback
+void * pomelo_shared_pool_acquire(
+    pomelo_pool_shared_t * pool,
+    void * init_data
+);
+
+
+/// @brief Release an element to this pool
+void pomelo_pool_shared_release(pomelo_pool_shared_t * pool, void * element);
+
+
 /// @brief Acquire elements from available list of pool
 /// @return Number of actually acquired elements
 size_t pomelo_pool_acquire_elements(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     size_t nelements,
     pomelo_pool_element_t ** elements
 );
+
 
 /// @brief Allocate new elements and add them to the allocated list of pool
 /// @return Number of actually allocated elements
 size_t pomelo_pool_allocate_elements(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     size_t nelements,
     pomelo_pool_element_t ** elements
 );
+
 
 /// @brief Release elements
 void pomelo_pool_release_elements(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     size_t nelements,
     pomelo_pool_element_t ** elements
 );
 
+
 /// @brief Link elements to allocated list
 void pomelo_pool_link_allocated(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     pomelo_pool_element_t ** elements,
     size_t nelements
 );
+
 
 /// @brief Unlink elements from allocated list
 void pomelo_pool_unlink_allocated(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     pomelo_pool_element_t ** elements,
     size_t nelements
 );
+
 
 /// @brief Link elements to available list
 void pomelo_pool_link_available(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     pomelo_pool_element_t ** elements,
     size_t nelements
 );
 
+
 /// @brief Unlink elements from available list
 void pomelo_pool_unlink_available(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     pomelo_pool_element_t ** elements,
     size_t nelements
 );

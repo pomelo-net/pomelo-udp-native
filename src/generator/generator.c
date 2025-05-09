@@ -9,7 +9,7 @@
 #include "pomelo/token.h"
 #include "pomelo/allocator.h"
 #include "utils/map.h"
-#include "utils/args.h"
+#include "args.h"
 
 
 #define POMELO_CONNECT_TOKEN_BASE64_CAPACITY \

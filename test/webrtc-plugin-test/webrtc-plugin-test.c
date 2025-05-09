@@ -31,9 +31,9 @@ int main(int argc, char * argv[]) {
     size_t allocated_bytes = pomelo_allocator_allocated_bytes(allocator);
 
     // Create context
-    pomelo_context_root_options_t context_options;
-    pomelo_context_root_options_init(&context_options);
-    context_options.allocator = allocator;
+    pomelo_context_root_options_t context_options = {
+        .allocator = allocator
+    };
     context = pomelo_context_root_create(&context_options);
     if (!context) {
         return -1;
@@ -65,7 +65,7 @@ int main(int argc, char * argv[]) {
     // Register plugin
     pomelo_plugin_t * plugin = pomelo_plugin_register(
         allocator,
-        (pomelo_context_t *) context,
+        context,
         platform,
         initializer
     );
@@ -75,13 +75,12 @@ int main(int argc, char * argv[]) {
     }
 
     // Create new socket
-    pomelo_socket_options_t socket_options;
-    pomelo_socket_options_init(&socket_options);
-    socket_options.allocator = allocator;
-    socket_options.context = (pomelo_context_t *) context;
-    socket_options.platform = platform;
-    socket_options.nchannels = NUMBER_OF_CHANNELS;
-    socket_options.channel_modes = channel_modes;
+    pomelo_socket_options_t socket_options = {
+        .context = context,
+        .platform = platform,
+        .nchannels = NUMBER_OF_CHANNELS,
+        .channel_modes = channel_modes
+    };
     pomelo_socket_t * socket = pomelo_socket_create(&socket_options);
     if (!socket) {
         printf("Failed to create socket\n");
@@ -125,6 +124,16 @@ int main(int argc, char * argv[]) {
 }
 
 
+void pomelo_session_on_cleanup(pomelo_session_t * session) {
+    (void) session;
+}
+
+
+void pomelo_channel_on_cleanup(pomelo_channel_t * channel) {
+    (void) channel;
+}
+
+
 void pomelo_socket_on_connected(
     pomelo_socket_t * socket,
     pomelo_session_t * session
@@ -165,22 +174,12 @@ void pomelo_socket_on_received(
         printf("Session received value: %d\n", value);
     }
 
-    pomelo_message_t * reply =
-        pomelo_message_new((pomelo_context_t *) context);
-    if (!reply) {
-        return;
-    }
+    pomelo_message_t * reply = pomelo_context_acquire_message(context);
+    if (!reply) return;
 
     pomelo_message_write_int32(reply, 78692);
-    ret = pomelo_session_send(session, 0, reply);
-    if (ret < 0) {
-        pomelo_message_unref(reply);
-    }
-}
-
-
-void pomelo_socket_on_stopped(pomelo_socket_t * socket) {
-    (void) socket;
+    pomelo_session_send(session, 0, reply, NULL);
+    pomelo_message_unref(reply);
 }
 
 
@@ -193,6 +192,14 @@ void pomelo_socket_on_connect_result(
 }
 
 
-void pomelo_message_on_released(pomelo_message_t * message) {
+void pomelo_socket_on_send_result(
+    pomelo_socket_t * socket,
+    pomelo_message_t * message,
+    void * data,
+    size_t send_count
+) {
+    (void) socket;
     (void) message;
+    (void) data;
+    (void) send_count;
 }

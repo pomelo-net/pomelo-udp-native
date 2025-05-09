@@ -8,12 +8,6 @@ extern "C" {
 int pomelo_test_address(void);
 int pomelo_test_payload(void);
 int pomelo_test_allocator(void);
-int pomelo_test_pool(void);
-int pomelo_test_list(void);
-int pomelo_test_unrolled_list(void);
-int pomelo_test_array(void);
-int pomelo_test_map(void);
-int pomelo_test_codec(void);
 int pomelo_test_reference(void);
 
 

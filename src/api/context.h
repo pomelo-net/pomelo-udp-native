@@ -3,10 +3,15 @@
 #include "pomelo/api.h"
 #include "utils/pool.h"
 #include "base/buffer.h"
+#include "base/extra.h"
 #include "delivery/delivery.h"
 #include "protocol/protocol.h"
-#include "api/plugin/plugin.h"
-#include "base/extra.h"
+#include "plugin/plugin.h"
+#include "api/message.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /// @brief The buffer size of fragments shared pool
 #define POMELO_API_MESSAGES_POOL_BUFFER_SHARED_BUFFER_SIZE 128
@@ -14,25 +19,17 @@
 /// @brief Default capacity of a message
 #define POMELO_MESSAGE_DEFAULT_CAPACITY 65536
 
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /// @brief Root context
 typedef struct pomelo_context_root_s pomelo_context_root_t;
-
-#ifdef POMELO_MULTI_THREAD
 
 /// @brief Shared context
 typedef struct pomelo_context_shared_s pomelo_context_shared_t;
 
-#endif // POMELO_MULTI_THREAD
-
 
 /// @brief The message acquiring function
 typedef pomelo_message_t * (*pomelo_context_acquire_message_fn)(
-    pomelo_context_t * context
+    pomelo_context_t * context,
+    pomelo_message_info_t * info
 );
 
 /// @brief The message releasing function
@@ -53,12 +50,11 @@ struct pomelo_context_s {
     /// @brief Extra data of context
     pomelo_extra_t extra;
 
-#ifdef POMELO_MULTI_THREAD
-    
+    /// @brief The allocator
+    pomelo_allocator_t * allocator;
+
     /// @brief Root context. If this context is root, this will be NULL.
     pomelo_context_root_t * root;
-
-#endif // POMELO_MULTI_THREAD
 
     /// @brief Acquire new message
     pomelo_context_acquire_message_fn acquire_message;
@@ -85,6 +81,21 @@ struct pomelo_context_s {
 
     /// @brief Capacity of a message
     size_t message_capacity;
+
+    /// @brief The socket pool
+    pomelo_pool_t * socket_pool;
+
+    /// @brief The builtin session pool
+    pomelo_pool_t * builtin_session_pool;
+
+    /// @brief The builtin channel pool
+    pomelo_pool_t * builtin_channel_pool;
+    
+    /// @brief The plugin session pool
+    pomelo_pool_t * plugin_session_pool;
+
+    /// @brief The plugin channel pool
+    pomelo_pool_t * plugin_channel_pool;
 };
 
 
@@ -96,13 +107,10 @@ struct pomelo_context_root_s {
     pomelo_allocator_t * allocator;
 
     /// @brief The data context
-    pomelo_buffer_context_root_t * buffer_context;
+    pomelo_buffer_context_t * buffer_context;
 
     /// @brief The delivery context
-    pomelo_delivery_context_root_t * delivery_context;
-
-    /// @brief The protocol context
-    pomelo_protocol_context_root_t * protocol_context;
+    pomelo_delivery_context_t * delivery_context;
 
     /// @brief [Synchronized] The API messages pool.
     pomelo_pool_t * message_pool;
@@ -111,7 +119,6 @@ struct pomelo_context_root_s {
     pomelo_plugin_manager_t * plugin_manager;
 };
 
-#ifdef POMELO_MULTI_THREAD
 
 struct pomelo_context_shared_s {
     /// @brief The interface of context
@@ -121,52 +128,54 @@ struct pomelo_context_shared_s {
     pomelo_allocator_t * allocator;
 
     /// @brief The buffer context
-    pomelo_buffer_context_shared_t * buffer_context;
-
-    /// @brief The protocol context
-    pomelo_protocol_context_shared_t * protocol_context;
+    pomelo_buffer_context_t * buffer_context;
 
     /// @brief The delivery context
-    pomelo_delivery_context_shared_t * delivery_context;
+    pomelo_delivery_context_t * delivery_context;
 
     /// @brief The message pool
-    pomelo_shared_pool_t * message_pool;
+    pomelo_pool_t * message_pool;
 };
 
-#endif // POMELO_MULTI_THREAD
 
 // The following APIs are internal usage.
 // For public usage, use the interface instead.
 
 /// @brief Prepare a message for sending
-pomelo_message_t * pomelo_context_acquire_message(pomelo_context_root_t * context);
+pomelo_message_t * pomelo_context_root_acquire_message(
+    pomelo_context_root_t * context,
+    pomelo_message_info_t * info
+);
+
 
 /// @brief Release a message
-void pomelo_context_release_message(
+void pomelo_context_root_release_message(
     pomelo_context_root_t * context,
     pomelo_message_t * message
 );
 
+
 /// @brief Get the context statistic
-void pomelo_context_statistic(
+void pomelo_context_root_statistic(
     pomelo_context_root_t * context,
     pomelo_statistic_api_t * statistic
 );
+
 
 /// @brief Destroy root context
 void pomelo_context_root_destroy(pomelo_context_root_t * context);
 
 
-#ifdef POMELO_MULTI_THREAD
-
-
 /// @brief Destroy shared context
 void pomelo_context_shared_destroy(pomelo_context_shared_t * context);
 
+
 /// @brief Prepare a message for sending
 pomelo_message_t * pomelo_context_shared_acquire_message(
-    pomelo_context_shared_t * context
+    pomelo_context_shared_t * context,
+    pomelo_message_info_t * info
 );
+
 
 /// @brief Release message
 void pomelo_context_shared_release_message(
@@ -174,13 +183,26 @@ void pomelo_context_shared_release_message(
     pomelo_message_t * message
 );
 
+
 /// @brief Get the context statistic
 void pomelo_context_shared_statistic(
     pomelo_context_shared_t * context,
     pomelo_statistic_api_t * statistic
 );
 
-#endif // POMELO_MULTI_THREAD
+
+/// @brief Acquire a message
+pomelo_message_t * pomelo_context_acquire_message_ex(
+    pomelo_context_t * context,
+    pomelo_message_info_t * info
+);
+
+
+/// @brief Release a message to context
+void pomelo_context_release_message(
+    pomelo_context_t * context,
+    pomelo_message_t * message
+);
 
 
 #ifdef __cplusplus

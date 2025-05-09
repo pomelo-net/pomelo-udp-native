@@ -1,27 +1,42 @@
 #ifndef POMELO_ADAPTER_SRC_H
 #define POMELO_ADAPTER_SRC_H
 #include "pomelo/allocator.h"
+#include "pomelo/common.h"
 #include "platform/platform.h"
-#include "base/packet.h"
+#include "base/buffer.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/*
-    This is the middle layer between protocol and platform layers to
-    send & receive UDP packets.
-*/
 
+/**
+ * This is the middle layer between protocol and platform.
+ * It forwards packets from UDP platform layer to protocol layer and
+ * vice versa.
+ */
 
-/// Adapter supports transmiting unencrypted packets
-#define POMELO_ADAPTER_CAPABILITY_UNENCRYPTED (1 << 0)
+/// Adapter supports transmiting unencrypted packets for server
+#define POMELO_ADAPTER_CAPABILITY_SERVER_UNENCRYPTED (1 << 0)
 
-/// Adapter supports transmiting encrypted packets
-#define POMELO_ADAPTER_CAPABILITY_ENCRYPTED   (1 << 1)
+/// Adapter supports transmiting encrypted packets for server
+#define POMELO_ADAPTER_CAPABILITY_SERVER_ENCRYPTED   (1 << 1)
 
+/// Adapter supports both unencrypted and encrypted packets for server
+#define POMELO_ADAPTER_CAPABILITY_SERVER_ALL                                   \
+    (POMELO_ADAPTER_CAPABILITY_SERVER_UNENCRYPTED |                            \
+    POMELO_ADAPTER_CAPABILITY_SERVER_ENCRYPTED)
 
-/// @brief The pomelo adapter
-typedef struct pomelo_adapter_s pomelo_adapter_t;
+/// Adapter supports transmiting unencrypted packets for client
+#define POMELO_ADAPTER_CAPABILITY_CLIENT_UNENCRYPTED (1 << 2)
+
+/// Adapter supports transmiting encrypted packets for client
+#define POMELO_ADAPTER_CAPABILITY_CLIENT_ENCRYPTED   (1 << 3)
+
+/// Adapter supports both unencrypted and encrypted packets for client
+#define POMELO_ADAPTER_CAPABILITY_CLIENT_ALL                                   \
+    (POMELO_ADAPTER_CAPABILITY_CLIENT_UNENCRYPTED |                            \
+    POMELO_ADAPTER_CAPABILITY_CLIENT_ENCRYPTED)
+
 
 /// @brief Creating options of adapter
 typedef struct pomelo_adapter_options_s pomelo_adapter_options_t;
@@ -34,10 +49,6 @@ struct pomelo_adapter_options_s {
     /// @brief Platform of adapter
     pomelo_platform_t * platform;
 };
-
-
-/// @brief Initialize adapter options
-void pomelo_adapter_options_init(pomelo_adapter_options_t * options);
 
 
 /// @brief Create the adapter
@@ -60,7 +71,7 @@ void * pomelo_adapter_get_extra(pomelo_adapter_t * adapter);
 /// value of this function to make decision whether encrypting packets or not.
 /// If adapter supports both unencrypted and encrypted packets, protocol will
 /// use encrypting.
-uint8_t pomelo_adapter_get_capability(pomelo_adapter_t * adapter);
+uint32_t pomelo_adapter_get_capability(pomelo_adapter_t * adapter);
 
 
 /// @brief Start adapter as client and connect to server
@@ -85,24 +96,8 @@ int pomelo_adapter_stop(pomelo_adapter_t * adapter);
 int pomelo_adapter_send(
     pomelo_adapter_t * adapter,
     pomelo_address_t * address,
-    pomelo_packet_t * packet,
-    void * callback_data,
+    pomelo_buffer_view_t * view,
     bool encrypted
-);
-
-
-/// @brief Callback data on sent
-void pomelo_adapter_on_sent(
-    pomelo_adapter_t * adapter,
-    void * send_data,
-    int status
-);
-
-
-/// @brief Allocate callback
-void pomelo_adapter_on_alloc(
-    pomelo_adapter_t * adapter,
-    pomelo_buffer_vector_t * buffer_vector
 );
 
 
@@ -110,10 +105,13 @@ void pomelo_adapter_on_alloc(
 void pomelo_adapter_on_recv(
     pomelo_adapter_t * adapter,
     pomelo_address_t * address,
-    pomelo_buffer_vector_t * buffer_vector,
-    int status,
+    pomelo_buffer_view_t * view,
     bool encrypted
 );
+
+
+/// @brief Allocate a buffer for receiving
+pomelo_buffer_t * pomelo_adapter_buffer_acquire(pomelo_adapter_t * adapter);
 
 
 #ifdef __cplusplus

@@ -9,6 +9,7 @@
 
 int pomelo_test_address(void) {
     pomelo_address_t address;
+    int ret;
 
     // IPv4
     pomelo_check(pomelo_address_from_string(&address, "4.1.200.34:1234") == 0);
@@ -25,12 +26,10 @@ int pomelo_test_address(void) {
     pomelo_check(pomelo_address_from_string(&address, "5.6....") != 0);
 
     // IPv6
-    pomelo_check(
-        pomelo_address_from_string(
-            &address,
-            "[fe80::ce81:b1c:bd2c:69e]:4322"
-        ) == 0
+    ret = pomelo_address_from_string(
+        &address, "[fe80::ce81:b1c:bd2c:69e]:4322"
     );
+    pomelo_check(ret == 0);
 
     pomelo_check(address.type == POMELO_ADDRESS_IPV6);
     pomelo_check(address.port == htons(4322));
@@ -43,19 +42,11 @@ int pomelo_test_address(void) {
     pomelo_check(address.ip.v6[6] == htons(0xbd2c));
     pomelo_check(address.ip.v6[7] == htons(0x069e));
 
-    pomelo_check(
-        pomelo_address_from_string(
-            &address,
-            "fe80::ce81:b1c:bd2c::4322"
-        ) != 0
-    );
+    ret = pomelo_address_from_string(&address, "fe80::ce81:b1c:bd2c::4322");
+    pomelo_check(ret != 0);
 
-    pomelo_check(
-        pomelo_address_from_string(
-            &address,
-            "fe80::ce81:b1c:bd2c:69e"
-        ) != 0
-    );
+    ret = pomelo_address_from_string(&address, "fe80::ce81:b1c:bd2c:69e");
+    pomelo_check(ret != 0);
 
     return 0;
 }

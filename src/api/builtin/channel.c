@@ -5,6 +5,7 @@
 #include "api/session.h"
 #include "api/socket.h"
 #include "api/channel.h"
+#include "api/context.h"
 #include "channel.h"
 #include "session.h"
 
@@ -30,56 +31,40 @@ pomelo_channel_methods_t * pomelo_channel_builtin_methods(void) {
 
 int pomelo_channel_builtin_init(
     pomelo_channel_builtin_t * channel,
-    pomelo_session_builtin_t * session
+    pomelo_channel_builtin_info_t * info
 ) {
     assert(channel != NULL);
-    assert(session != NULL);
+    assert(info != NULL);
 
-    int ret = pomelo_channel_init(&channel->base, &session->base);
-    if (ret < 0) {
-        return ret;
-    }
+    // Initialize base channel
+    pomelo_channel_info_t base_info = {
+        .session = &info->session->base,
+        .methods = pomelo_channel_builtin_methods()
+    };
+    int ret = pomelo_channel_init(&channel->base, &base_info);
+    if (ret < 0) return ret; // Failed to initialize base channel
 
-    // Update methods table
-    channel->base.methods = pomelo_channel_builtin_methods();
-    
-    channel->bus = NULL;
-    channel->mode = POMELO_CHANNEL_MODE_UNRELIABLE;
+    // Initialize bus & mode
+    channel->bus = info->bus;
+    pomelo_delivery_bus_set_extra(channel->bus, channel);
+
+    channel->mode = info->mode;
 
     return 0;
 }
 
 
-int pomelo_channel_builtin_wrap(
-    pomelo_channel_builtin_t * channel,
-    pomelo_delivery_bus_t * bus,
-    pomelo_channel_mode mode
-) {
-    assert(channel != NULL);
-    assert(bus != NULL);
-
-    channel->bus = bus;
-    channel->mode = mode;
-
-    return 0;
-}
-
-
-
-int pomelo_channel_builtin_finalize(
-    pomelo_channel_builtin_t * channel,
-    pomelo_session_builtin_t * session
-) {
+void pomelo_channel_builtin_cleanup(pomelo_channel_builtin_t * channel) {
     assert(channel != NULL);
 
+    pomelo_delivery_bus_set_extra(channel->bus, NULL);
     channel->bus = NULL;
-    channel->mode = POMELO_CHANNEL_MODE_UNRELIABLE;
 
-    return pomelo_channel_finalize(&channel->base, &session->base);
+    channel->mode = POMELO_CHANNEL_MODE_UNRELIABLE;
+    pomelo_channel_cleanup(&channel->base);
 }
 
 
-/// @brief Change the delivery mode of a channel
 int pomelo_channel_builtin_set_mode(
     pomelo_channel_builtin_t * channel,
     pomelo_channel_mode mode
@@ -102,8 +87,7 @@ pomelo_channel_mode pomelo_channel_builtin_get_mode(
 }
 
 
-
-int pomelo_channel_builtin_send(
+void pomelo_channel_builtin_send(
     pomelo_channel_builtin_t * channel,
     pomelo_message_t * message
 ) {
@@ -111,21 +95,37 @@ int pomelo_channel_builtin_send(
     assert(message != NULL);
 
     pomelo_delivery_bus_t * bus = channel->bus;
-    if (!bus) {
-        // Invalid channel
-        return POMELO_ERR_CHANNEL_INVALID;
-    }
+    assert(bus != NULL);
+
+    pomelo_socket_t * socket = channel->base.session->socket;
+    assert(socket != NULL);
 
     // Update the message context
-    pomelo_message_set_context(message, channel->base.session->socket->context);
+    pomelo_message_set_context(message, socket->context);
 
-    pomelo_delivery_mode mode = (pomelo_delivery_mode) channel->mode;
-    int ret = pomelo_delivery_bus_send(bus, message->parcel, mode);
-
-    // Unreference the message after sending
-    if (ret == 0) {
-        // Only unref the message when sending is successful
-        pomelo_message_unref(message);
+    // Create sender
+    pomelo_delivery_sender_options_t options = {
+        .context = socket->context->delivery_context,
+        .parcel = message->parcel,
+        .platform = socket->platform
+    };
+    pomelo_delivery_sender_t * sender = pomelo_delivery_sender_create(&options);
+    if (!sender) {
+        // Failed to create sender
+        pomelo_socket_dispatch_send_result(socket, message);
+        return;
     }
-    return ret;
+    pomelo_delivery_sender_set_extra(sender, socket);
+
+    int ret = pomelo_delivery_sender_add_transmission(
+        sender, bus, (pomelo_delivery_mode) channel->mode
+    );
+    if (ret < 0) {
+        // Failed to add recipient
+        pomelo_socket_dispatch_send_result(socket, message);
+        pomelo_delivery_sender_cancel(sender);
+        return;
+    }
+    
+    pomelo_delivery_sender_submit(sender);
 }

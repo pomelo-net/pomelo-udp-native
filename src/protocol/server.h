@@ -3,14 +3,12 @@
 #include <stdbool.h>
 #include "protocol.h"
 #include "platform/platform.h"
-#include "base/packet.h"
 #include "utils/pool.h"
 #include "utils/map.h"
+#include "utils/macro.h"
 #include "socket.h"
+#include "packet.h"
 
-
-/// The expire time of anonymous peers (60 seconds)
-#define POMELO_ANONYMOUS_PEER_EXPIRE_TIME_NS 60000000000ULL
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,28 +19,24 @@ struct pomelo_protocol_server_s {
     /// @brief The base socket
     pomelo_protocol_socket_t socket;
 
-    /// @brief The peers pool
-    pomelo_pool_t * peer_pool;
-
     /// @brief The address map for connected peers.
     /// Map from address to peer.
-    pomelo_map_t * address_connected_map;
+    pomelo_map_t * peer_address_map;
 
-    /// @brief The address map for anonymous peers.
-    /// Map from address to peer
-    pomelo_map_t * address_anonymous_map;
+    /// @brief The requesting peers
+    pomelo_list_t * requesting_peers;
 
-    /// @brief The client id map. Map from client ID to peer
-    pomelo_map_t * client_id_map;
+    /// @brief The challenging peers
+    pomelo_list_t * challenging_peers;
+
+    /// @brief The denied peers
+    pomelo_list_t * denied_peers;
 
     /// @brief The connected peers
     pomelo_list_t * connected_peers;
 
     /// @brief The disconnecting peers
     pomelo_list_t * disconnecting_peers;
-
-    /// @brief The anonymous peers waiting to be authenticated
-    pomelo_list_t * anonymous_peers;
 
     /// @brief The private key for decoding request packets
     uint8_t private_key[POMELO_KEY_BYTES];
@@ -59,51 +53,79 @@ struct pomelo_protocol_server_s {
     /// @brief The bind address of server
     pomelo_address_t address;
 
-    /// @brief The ping timer
-    pomelo_platform_timer_t * ping_timer;
-
     /// @brief The sequence number for anonymous peer
     uint64_t anonymous_sequence_number;
 
     /// @brief The challenge packet sequence number
     uint64_t challenge_sequence_number;
 
+    /// @brief The keep alive timer
+    pomelo_platform_timer_handle_t keep_alive_timer;
+
     /// @brief The timer for sending redundants disconnect packets
-    pomelo_platform_timer_t * disconnecting_timer;
+    pomelo_platform_timer_handle_t disconnecting_timer;
+
+    /// @brief The timer for removing expired anonymous peers
+    pomelo_platform_timer_handle_t anonymous_timer;
+
+    /// @brief The task for keep alive
+    pomelo_sequencer_task_t keep_alive_task;
+
+    /// @brief The task for sending redundants disconnect packets
+    pomelo_sequencer_task_t disconnecting_task;
+
+    /// @brief The task for removing expired anonymous peers
+    pomelo_sequencer_task_t scan_challenging_task;
 };
 
 
+/// @brief The callback on server allocated
+int pomelo_protocol_server_on_alloc(
+    pomelo_protocol_server_t * server,
+    pomelo_protocol_context_t * context
+);
 
-/* -------------------------------------------------------------------------- */
-/*                               Public APIs                                  */
-/* -------------------------------------------------------------------------- */
+
+/// @brief The callback on server freed
+void pomelo_protocol_server_on_free(pomelo_protocol_server_t * server);
 
 
-/// Destroy all pools & maps of server
+/// @brief Initialize the server
+int pomelo_protocol_server_init(
+    pomelo_protocol_server_t * server,
+    pomelo_protocol_server_options_t * options
+);
+
+
+/// @brief Cleanup the server
+void pomelo_protocol_server_cleanup(pomelo_protocol_server_t * server);
+
+
+/// @brief Destroy the server
 void pomelo_protocol_server_destroy(pomelo_protocol_server_t * server);
+
 
 /// @brief The socket server starts listening
 /// @return 0 on success, or an error code < 0 on failure
 int pomelo_protocol_server_start(pomelo_protocol_server_t * server);
 
+
 /// @brief Stop the server
 void pomelo_protocol_server_stop(pomelo_protocol_server_t * server);
 
-/// @brief Deferred stopping server
-void pomelo_protocol_server_stop_deferred(pomelo_protocol_server_t * server);
 
-/* -------------------------------------------------------------------------- */
-/*                            Receiving callbacks                             */
-/* -------------------------------------------------------------------------- */
-
-/// @brief Receiving callback for socket server
-int pomelo_protocol_server_on_recv(
+/// @brief Validate the incoming packet
+int pomelo_protocol_server_validate(
     pomelo_protocol_server_t * server,
-    pomelo_address_t * address,
-    pomelo_buffer_t * buffer,
-    size_t length,
-    uint64_t recv_time,
-    bool encrypted
+    pomelo_protocol_packet_incoming_t * incoming,
+    pomelo_protocol_packet_validation_t * validation
+);
+
+
+/// @brief Process the packet before sending
+void pomelo_protocol_server_presend_packet(
+    pomelo_protocol_server_t * server,
+    pomelo_protocol_peer_t * peer
 );
 
 
@@ -111,77 +133,78 @@ int pomelo_protocol_server_on_recv(
 /*                          Server incoming packets                           */
 /* -------------------------------------------------------------------------- */
 
-/// @brief Process request packet
-void pomelo_protocol_server_recv_request_packet(
+/// @brief Process the incoming packet
+void pomelo_protocol_server_recv_packet(
     pomelo_protocol_server_t * server,
     pomelo_protocol_peer_t * peer,
-    pomelo_packet_request_t * packet,
-    int result
+    pomelo_protocol_packet_t * packet
 );
+
+
+/// @brief Process the incoming packet failed
+void pomelo_protocol_server_recv_failed(
+    pomelo_protocol_server_t * server,
+    pomelo_protocol_peer_t * peer,
+    pomelo_protocol_packet_header_t * header
+);
+
+
+/// @brief Process request packet
+void pomelo_protocol_server_recv_request(
+    pomelo_protocol_server_t * server,
+    pomelo_protocol_peer_t * peer,
+    pomelo_protocol_packet_request_t * packet
+);
+
+
+/// @brief Process request packet failed
+void pomelo_protocol_server_recv_request_failed(
+    pomelo_protocol_server_t * server,
+    pomelo_protocol_peer_t * peer,
+    pomelo_protocol_packet_header_t * header
+);
+
 
 /// @brief Process the response packet
-void pomelo_protocol_server_recv_response_packet(
+void pomelo_protocol_server_recv_response(
     pomelo_protocol_server_t * server,
     pomelo_protocol_peer_t * peer,
-    pomelo_packet_response_t * packet,
-    int result
+    pomelo_protocol_packet_response_t * packet
 );
+
 
 /// @brief Process disconnect packet
-void pomelo_protocol_server_recv_disconnect_packet(
+void pomelo_protocol_server_recv_disconnect(
     pomelo_protocol_server_t * server,
     pomelo_protocol_peer_t * peer,
-    pomelo_packet_disconnect_t * packet,
-    int result
+    pomelo_protocol_packet_disconnect_t * packet
 );
 
-/// @brief Process ping packet
-void pomelo_protocol_server_recv_ping_packet(
+
+/// @brief Process keep alive packet
+void pomelo_protocol_server_recv_keep_alive(
     pomelo_protocol_server_t * server,
     pomelo_protocol_peer_t * peer,
-    pomelo_packet_ping_t * packet,
-    uint64_t recv_time,
-    int result
+    pomelo_protocol_packet_keep_alive_t * packet
 );
 
 
 /* -------------------------------------------------------------------------- */
-/*                          Server outgoing packets                           */
+/*                             Outgoing packets                               */
 /* -------------------------------------------------------------------------- */
 
-
-/// @brief Denied packet sending callback. This will cleanup the
-/// anonymous peer.
-void pomelo_protocol_server_sent_denied_packet(
+/// @brief Process sent packet
+void pomelo_protocol_server_sent_packet(
     pomelo_protocol_server_t * server,
     pomelo_protocol_peer_t * peer,
-    pomelo_packet_denied_t * packet,
-    int result
+    pomelo_protocol_packet_t * packet
 );
 
 
-/// @brief Challenge packet sending callback
-void pomelo_protocol_server_sent_challenge_packet(
+/// @brief Process after sending the denied packet
+void pomelo_protocol_server_sent_denied(
     pomelo_protocol_server_t * server,
-    pomelo_protocol_peer_t * peer,
-    pomelo_packet_challenge_t * packet,
-    int result
-);
-
-/// @brief ping packet sending callback
-void pomelo_protocol_server_sent_ping_packet(
-    pomelo_protocol_server_t * server,
-    pomelo_protocol_peer_t * peer,
-    pomelo_packet_ping_t * packet,
-    int result
-);
-
-/// @brief Disconnect packet sending callback
-void pomelo_protocol_server_sent_disconnect_packet(
-    pomelo_protocol_server_t * server,
-    pomelo_protocol_peer_t * peer,
-    pomelo_packet_disconnect_t * packet,
-    int result
+    pomelo_protocol_peer_t * peer
 );
 
 
@@ -189,65 +212,44 @@ void pomelo_protocol_server_sent_disconnect_packet(
 /*                        Server specific functions                           */
 /* -------------------------------------------------------------------------- */
 
-
-/// @brief The ping callback for socket server
-void pomelo_protocol_server_ping_callback(
+/// @brief Broadcast keep alive to all connected peers
+void pomelo_protocol_server_broadcast_keep_alive(
     pomelo_protocol_server_t * server
 );
 
-/// @brief Process disconnected peer for server socket
-void pomelo_protocol_server_process_disconnected_peer(
-    pomelo_protocol_server_t * server,
-    pomelo_protocol_peer_t * peer
-);
 
 /// @brief Send the connection challenge packet
-void pomelo_protocol_server_send_challenge_packet(
+int pomelo_protocol_server_send_challenge(
     pomelo_protocol_server_t * server,
     pomelo_protocol_peer_t * peer,
-    pomelo_packet_request_t * request_packet
+    pomelo_protocol_packet_request_t * request_packet
 );
 
 
 /// @brief Send the connection denied packet.
 /// The anonymous peer will automatically removed after sending is done.
-void pomelo_protocol_server_send_denied_packet(
+int pomelo_protocol_server_send_denied(
     pomelo_protocol_server_t * server,
     pomelo_protocol_peer_t * peer
 );
 
-/// @brief Send ping packet to target peer
-void pomelo_protocol_server_ping(
+
+/// @brief Send keep alive packet to target peer
+int pomelo_protocol_server_send_keep_alive(
     pomelo_protocol_server_t * server,
     pomelo_protocol_peer_t * peer
 );
 
-/// @brief Get the connected peer by address
-pomelo_protocol_peer_t * pomelo_protocol_server_find_connected_peer(
+
+/// @brief Acquire a peer from the server and add it to address map
+pomelo_protocol_peer_t * pomelo_protocol_server_acquire_peer(
     pomelo_protocol_server_t * server,
     pomelo_address_t * address
 );
 
-/// @brief Get the anonymous peer by address
-pomelo_protocol_peer_t * pomelo_protocol_server_find_anonymous_peer(
-    pomelo_protocol_server_t * server,
-    pomelo_address_t * address
-);
 
-/// @brief Find or create new anonymous peer
-pomelo_protocol_peer_t * pomelo_protocol_server_find_or_create_anonymous_peer(
-    pomelo_protocol_server_t * server,
-    pomelo_address_t * address
-);
-
-/// @brief Remove a connected peer
-void pomelo_protocol_server_remove_connected_peer(
-    pomelo_protocol_server_t * server,
-    pomelo_protocol_peer_t * peer
-);
-
-/// @brief Remove an anonymous peer
-void pomelo_protocol_server_remove_anonymous_peer(
+/// @brief Release a peer from the server and remove it from address map
+void pomelo_protocol_server_release_peer(
     pomelo_protocol_server_t * server,
     pomelo_protocol_peer_t * peer
 );
@@ -259,14 +261,32 @@ int pomelo_protocol_server_disconnect_peer(
     pomelo_protocol_peer_t * peer
 );
 
+
 /// @brief Send redundant disconnect packets to all disconnecting peers
-void pomelo_protocol_server_send_disconnect(pomelo_protocol_server_t * server);
+void pomelo_protocol_server_broadcast_disconnect(
+    pomelo_protocol_server_t * server
+);
+
 
 /// @brief Send a redundant disconnect packet to a peer
-void pomelo_protocol_server_send_disconnect_peer(
+int pomelo_protocol_server_send_disconnect_peer(
     pomelo_protocol_server_t * server,
     pomelo_protocol_peer_t * peer
 );
+
+
+/// @brief Scan challenging peers and remove expired ones
+void pomelo_protocol_server_scan_challenging_peers(
+    pomelo_protocol_server_t * server
+);
+
+
+/// @brief Deny a peer
+void pomelo_protocol_server_deny_peer(
+    pomelo_protocol_server_t * server,
+    pomelo_protocol_peer_t * peer
+);
+
 
 #ifdef __cplusplus
 }

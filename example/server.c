@@ -28,14 +28,8 @@ int main(int argc, char * argv[]) {
     pomelo_example_env_init(&env, argc > 1 ? argv[1] : NULL);
 
     // Random initial values
-    int ret = pomelo_codec_buffer_random(private_key, sizeof(private_key));
-    pomelo_assert(ret == 0);
-
-    ret = pomelo_codec_buffer_random(
-        (uint8_t *) &protocol_id,
-        sizeof(protocol_id)
-    );
-    pomelo_assert(ret == 0);
+    pomelo_random_buffer(private_key, sizeof(private_key));
+    pomelo_random_buffer((uint8_t *) &protocol_id, sizeof(protocol_id));
 
     // Parse address
     char address_str[POMELO_ADDRESS_STRING_BUFFER_CAPACITY];
@@ -48,7 +42,7 @@ int main(int argc, char * argv[]) {
     );
 
     pomelo_address_t address;
-    ret = pomelo_address_from_string(&address, address_str);
+    int ret = pomelo_address_from_string(&address, address_str);
     pomelo_assert(ret == 0);
 
     // Start listening
@@ -84,11 +78,10 @@ void pomelo_example_generate_token(uint8_t * connect_token) {
     token.protocol_id = protocol_id;
     token.create_timestamp = now;
     token.expire_timestamp = now + EXPIRE * 1000ULL;
-    int ret = pomelo_codec_buffer_random(
+    pomelo_random_buffer(
         token.connect_token_nonce,
         sizeof(token.connect_token_nonce)
     );
-    pomelo_assert(ret == 0);
     token.timeout = TIMEOUT;
     token.naddresses = 1;
 
@@ -100,18 +93,16 @@ void pomelo_example_generate_token(uint8_t * connect_token) {
         ADDRESS_HOST,
         ADDRESS_PORT
     );
-    ret = pomelo_address_from_string(&token.addresses[0], address_str);
+    int ret = pomelo_address_from_string(&token.addresses[0], address_str);
     pomelo_assert(ret == 0);
-    ret = pomelo_codec_buffer_random(
+    pomelo_random_buffer(
         token.client_to_server_key,
         sizeof(token.client_to_server_key)
     );
-    pomelo_assert(ret == 0);
-    ret = pomelo_codec_buffer_random(
+    pomelo_random_buffer(
         token.server_to_client_key,
         sizeof(token.server_to_client_key)
     );
-    pomelo_assert(ret == 0);
 
     token.client_id = ++client_id;
     memset(token.user_data, 0, sizeof(token.user_data));
@@ -128,6 +119,16 @@ void pomelo_example_generate_token(uint8_t * connect_token) {
 /* -------------------------------------------------------------------------- */
 /*                          Socket API implementation                         */
 /* -------------------------------------------------------------------------- */
+
+void pomelo_session_on_cleanup(pomelo_session_t * session) {
+    (void) session;
+}
+
+
+void pomelo_channel_on_cleanup(pomelo_channel_t * channel) {
+    (void) channel;
+}
+
 
 void pomelo_socket_on_connected(
     pomelo_socket_t * socket,
@@ -162,7 +163,7 @@ void pomelo_socket_on_received(
     printf("On received: %" PRId64 " message %zu bytes\n", client_id, size);
 
     // Reply it
-    pomelo_message_t * reply = pomelo_message_new(env.context);
+    pomelo_message_t * reply = pomelo_context_acquire_message(env.context);
     for (size_t i = 0; i < size; i++) {
         uint8_t value = 0;
         int ret = pomelo_message_read_uint8(message, &value);
@@ -170,12 +171,8 @@ void pomelo_socket_on_received(
         pomelo_message_write_uint8(reply, value);
     }
 
-    pomelo_session_send(session, 0, reply);
-}
-
-
-void pomelo_socket_on_stopped(pomelo_socket_t * socket) {
-    (void) socket;
+    pomelo_session_send(session, 0, reply, NULL);
+    pomelo_message_unref(reply);
 }
 
 
@@ -188,10 +185,17 @@ void pomelo_socket_on_connect_result(
 }
 
 
-void pomelo_message_on_released(pomelo_message_t * message) {
+void pomelo_socket_on_send_result(
+    pomelo_socket_t * socket,
+    pomelo_message_t * message,
+    void * data,
+    size_t send_count
+) {
+    (void) socket;
     (void) message;
+    (void) data;
+    (void) send_count;
 }
-
 
 /* -------------------------------------------------------------------------- */
 /*                          HTTP connect token server                         */
@@ -246,11 +250,11 @@ void http_server_on_data(
     pomelo_example_generate_token(connect_token);
 
     char connect_token_b64[
-        pomelo_codec_base64_calc_encoded_length(POMELO_CONNECT_TOKEN_BYTES)
+        pomelo_base64_calc_encoded_length(POMELO_CONNECT_TOKEN_BYTES)
     ];
     connect_token_b64[0] = '\0';
 
-    int ret = pomelo_codec_base64_encode(
+    int ret = pomelo_base64_encode(
         connect_token_b64,
         sizeof(connect_token_b64),
         connect_token,
@@ -269,7 +273,8 @@ void http_server_on_data(
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/plain\r\n"
         "Content-Length: %zu\r\n"
-        "Connection: close\r\n",
+        "Connection: close\r\n"
+        "Access-Control-Allow-Origin: *",
         sizeof(connect_token_b64) - 1
     );
 
@@ -364,7 +369,7 @@ static void http_server_serve_connect_token(void) {
     pomelo_assert(ret == 0);
 
     struct sockaddr_in addr;
-    ret = uv_ip4_addr(ADDRESS_HOST, ADDRESS_PORT, &addr);
+    ret = uv_ip4_addr(SERVICE_HOST, SERVICE_PORT, &addr);
     pomelo_assert(ret == 0);
 
     ret = uv_tcp_bind(&http_server, (struct sockaddr *) &addr, 0);
@@ -379,7 +384,7 @@ static void http_server_serve_connect_token(void) {
 
     printf(
         "HTTP server is listening on http://%s:%d\n",
-        ADDRESS_HOST,
-        ADDRESS_PORT
+        SERVICE_HOST,
+        SERVICE_PORT
     );
 }

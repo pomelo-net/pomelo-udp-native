@@ -37,7 +37,7 @@ do {                                                                           \
 } while(0)
 
 
-#define pomelo_track_function() printf("[i] %s triggered\n", __func__)
+#define pomelo_track_function() printf("[i] %s\n", __func__)
 
 
 #ifdef __cplusplus

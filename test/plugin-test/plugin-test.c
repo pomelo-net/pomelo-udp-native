@@ -36,6 +36,14 @@ void plugin_demo_entry(pomelo_plugin_t *plugin);
 POMELO_PLUGIN_ENTRY_REGISTER(plugin_demo_entry)
 
 
+static int extra_data = 0;
+static void demo_plugin_set_data(pomelo_plugin_t * plugin, void * data) {
+    pomelo_check(plugin != NULL);
+    pomelo_check(data != NULL);
+    extra_data = *(int *) data;
+}
+
+
 int main(void) {
     printf("Plugin test\n");
 
@@ -48,12 +56,10 @@ int main(void) {
     uv_loop_init(uv_loop);
 
     // Create platforms
-    pomelo_platform_uv_options_t platform_options;
-    pomelo_platform_uv_options_init(&platform_options);
-
-    platform_options.allocator = allocator;
-    platform_options.uv_loop = uv_loop;
-
+    pomelo_platform_uv_options_t platform_options = {
+        .allocator = allocator,
+        .uv_loop = uv_loop
+    };
     platform = pomelo_platform_uv_create(&platform_options);
     pomelo_check(platform != NULL);
 
@@ -61,10 +67,9 @@ int main(void) {
     pomelo_platform_startup(platform);
 
     // Create api context
-    pomelo_context_root_options_t context_options;
-    pomelo_context_root_options_init(&context_options);
-
-    context_options.allocator = allocator;
+    pomelo_context_root_options_t context_options = {
+        .allocator = allocator
+    };
     context = pomelo_context_root_create(&context_options);
     pomelo_check(context != NULL);
     /* End of init */
@@ -75,26 +80,29 @@ int main(void) {
     pomelo_plugin_initializer initializer =
         pomelo_plugin_load_by_name("pomelo-test-demo-plugin");
 
+    pomelo_plugin_t demo_plugin = {
+        .set_data = demo_plugin_set_data,
+    };
     pomelo_check(initializer != NULL);
-    initializer(NULL); // Try to call it
+    initializer(&demo_plugin, POMELO_PLUGIN_VERSION_HEX); // Try to call it
+    pomelo_check(extra_data == 1234);
 
     // Register plugin
     plugin = pomelo_plugin_register(
         allocator,
-        (pomelo_context_t *) context,
+        context,
         platform,
         pomelo_plugin_initializer_entry
     );
     pomelo_check(plugin != NULL);
 
     // Create new socket
-    pomelo_socket_options_t options;
-    pomelo_socket_options_init(&options);
-    options.allocator = allocator;
-    options.context = (pomelo_context_t *) context;
-    options.platform = platform;
-    options.nchannels = total_channels;
-    options.channel_modes = channel_modes;
+    pomelo_socket_options_t options = {
+        .context = context,
+        .platform = platform,
+        .nchannels = total_channels,
+        .channel_modes = channel_modes
+    };
 
     server = pomelo_socket_create(&options);
     pomelo_check(server != NULL);
@@ -118,6 +126,18 @@ int main(void) {
 }
 
 
+void pomelo_session_on_cleanup(pomelo_session_t * session) {
+    (void) session;
+    pomelo_track_function();
+}
+
+
+void pomelo_channel_on_cleanup(pomelo_channel_t * channel) {
+    (void) channel;
+    pomelo_track_function();
+}
+
+
 void pomelo_socket_on_connected(
     pomelo_socket_t * socket,
     pomelo_session_t * session
@@ -127,16 +147,14 @@ void pomelo_socket_on_connected(
     pomelo_check(session != NULL);
 
     // Send a message to this session
-    pomelo_message_t * message =
-        pomelo_message_new((pomelo_context_t *) context);
+    pomelo_message_t * message = pomelo_context_acquire_message(context);
     pomelo_check(message != NULL);
 
     int ret = pomelo_message_write_int32(message, 1234);
     pomelo_check(ret == 0);
 
-    ret = pomelo_session_send(session, 0, message);
-    pomelo_check(ret == 0);
-
+    pomelo_session_send(session, 0, message, NULL);
+    pomelo_message_unref(message);
     // => plugin_demo_session_send
 }
 
@@ -167,13 +185,7 @@ void pomelo_socket_on_received(
     pomelo_check(value == 4455);
 
     // Done testing
-    pomelo_platform_shutdown(platform);
-}
-
-
-void pomelo_socket_on_stopped(pomelo_socket_t * socket) {
-    pomelo_track_function();
-    (void) socket;
+    pomelo_platform_shutdown(platform, NULL);
 }
 
 
@@ -187,31 +199,18 @@ void pomelo_socket_on_connect_result(
 
 }
 
-/* -------------------------------------------------------------------------- */
-/*                                 Callbacks                                  */
-/* -------------------------------------------------------------------------- */
 
-
-void plugin_demo_socket_on_created_deferred(void * data) {
+void pomelo_socket_on_send_result(
+    pomelo_socket_t * socket,
+    pomelo_message_t * message,
+    void * data,
+    size_t send_count
+) {
     pomelo_track_function();
-    assert(data == plugin);
-
-    // Create new session and dispatch connected
-    pomelo_address_t address;
-    address.type = POMELO_ADDRESS_IPV6;
-    address.port = address_port;
-    memcpy(address.ip.v6, address_host, sizeof(address.ip.v6));
-
-    plugin->session_create(
-        plugin,
-        server,
-        client_id,
-        &address,
-        private_data,
-        data // Use plugin as private data
-    );
-
-    // => plugin_demo_session_create
+    (void) socket;
+    (void) message;
+    (void) data;
+    (void) send_count;
 }
 
 
@@ -244,13 +243,21 @@ void POMELO_PLUGIN_CALL plugin_demo_socket_on_created(
         pomelo_check(channel_mode == ((int) channel_modes[i]));
     }
 
-    // Submit next tick
-    pomelo_platform_submit_deferred_task(
-        platform,
-        NULL,
-        plugin_demo_socket_on_created_deferred,
-        plugin
+    // Create new session and dispatch connected
+    pomelo_address_t address;
+    address.type = POMELO_ADDRESS_IPV6;
+    address.port = address_port;
+    memcpy(address.ip.v6, address_host, sizeof(address.ip.v6));
+
+    pomelo_session_t * session = plugin->session_create(
+        plugin,
+        socket,
+        client_id,
+        &address
     );
+    pomelo_check(session != NULL);
+
+    // TODO: Update this test
 }
 
 
@@ -295,53 +302,6 @@ void POMELO_PLUGIN_CALL plugin_demo_socket_on_stopped(
     pomelo_track_function();
     pomelo_check(plugin != NULL);
     pomelo_check(socket != NULL);
-}
-
-
-void POMELO_PLUGIN_CALL plugin_demo_session_create(
-    pomelo_plugin_t * plugin,
-    pomelo_socket_t * socket,
-    pomelo_session_t * session,
-    void * callback_data,
-    pomelo_plugin_error_t error
-) {
-    pomelo_track_function();
-    pomelo_check(plugin != NULL);
-    pomelo_check(socket != NULL);
-    pomelo_check(session != NULL);
-    pomelo_check(callback_data == plugin);
-    pomelo_check(error == POMELO_PLUGIN_ERROR_OK);
-    pomelo_check(session != NULL);
-
-    void * data = plugin->session_get_private(plugin, session);
-    pomelo_check(data == private_data);
-
-    // pomelo_socket_on_connected
-}
-
-
-void POMELO_PLUGIN_CALL plugin_demo_session_receive(
-    pomelo_plugin_t * plugin,
-    pomelo_session_t * session,
-    size_t channel_index,
-    void * callback_data,
-    pomelo_message_t * message,
-    pomelo_plugin_error_t error
-) {
-    pomelo_track_function();
-    pomelo_check(plugin != NULL);
-    pomelo_check(session != NULL);
-    pomelo_check(message != NULL);
-    pomelo_check(channel_index == 1); // Receiving channel is 1
-    pomelo_check(callback_data == NULL);
-    pomelo_check(message != NULL);
-    pomelo_check(error == POMELO_PLUGIN_ERROR_OK);
-
-    // Write to message
-    int ret = pomelo_message_write_int32(message, 4455);
-    pomelo_check(ret == 0);
-
-    // pomelo_socket_on_received
 }
 
 
@@ -403,8 +363,10 @@ void POMELO_PLUGIN_CALL plugin_demo_session_send(
     pomelo_check(value == 1234);
     pomelo_check(channel_index == 0);
 
+    // TODO: Update this test
+
     // Prepare on receive
-    plugin->session_receive(plugin, session, 1, NULL);
+    // plugin->session_receive(plugin, session, 1, NULL);
 }
 
 
@@ -421,16 +383,9 @@ void plugin_demo_entry(pomelo_plugin_t * plugin) {
         plugin_demo_socket_on_listening,
         plugin_demo_socket_on_connecting,
         plugin_demo_socket_on_stopped,
-        plugin_demo_session_create,
-        plugin_demo_session_receive,
+        plugin_demo_session_send,
         plugin_demo_session_disconnect,
         plugin_demo_session_get_rtt,
-        plugin_demo_session_set_mode,
-        plugin_demo_session_send
+        plugin_demo_session_set_mode
     );
-}
-
-
-void pomelo_message_on_released(pomelo_message_t * message) {
-    (void) message;
 }

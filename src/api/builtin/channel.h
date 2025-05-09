@@ -4,11 +4,25 @@
 #include "api/channel.h"
 #include "delivery/delivery.h"
 #include "builtin.h"
-
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/// @brief The channel builtin info
+typedef struct pomelo_channel_builtin_info_s pomelo_channel_builtin_info_t;
+
+
+struct pomelo_channel_builtin_info_s {
+    /// @brief The session
+    pomelo_session_builtin_t * session;
+
+    /// @brief The channel mode
+    pomelo_channel_mode mode;
+
+    /// @brief The delivery bus
+    pomelo_delivery_bus_t * bus;
+};
+
 
 struct pomelo_channel_builtin_s {
     pomelo_channel_t base;
@@ -28,23 +42,12 @@ pomelo_channel_methods_t * pomelo_channel_builtin_methods(void);
 /// @brief Initialize the channel
 int pomelo_channel_builtin_init(
     pomelo_channel_builtin_t * channel,
-    pomelo_session_builtin_t * session
+    pomelo_channel_builtin_info_t * info
 );
 
 
-/// @brief Wrap the channel with bus
-int pomelo_channel_builtin_wrap(
-    pomelo_channel_builtin_t * channel,
-    pomelo_delivery_bus_t * bus,
-    pomelo_channel_mode mode
-);
-
-
-/// @brief Destroy the channel
-int pomelo_channel_builtin_finalize(
-    pomelo_channel_builtin_t * channel,
-    pomelo_session_builtin_t * session
-);
+/// @brief Cleanup the channel
+void pomelo_channel_builtin_cleanup(pomelo_channel_builtin_t * channel);
 
 
 /// @brief Set mode for builtin channel
@@ -61,7 +64,7 @@ pomelo_channel_mode pomelo_channel_builtin_get_mode(
 
 
 /// @brief Send message through builtin channel
-int pomelo_channel_builtin_send(
+void pomelo_channel_builtin_send(
     pomelo_channel_builtin_t * channel,
     pomelo_message_t * message
 );

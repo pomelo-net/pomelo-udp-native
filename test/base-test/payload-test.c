@@ -90,5 +90,22 @@ int pomelo_test_payload(void) {
     pomelo_check(f64 == 10002.212);
     pomelo_check(payload.position == 12);
 
+    // Test packed uint64
+    uint64_t value = 5836798162943001595ULL;
+    uint8_t buffer[8];
+    payload.data = buffer;
+    payload.capacity = 8;
+    payload.position = 0;
+    
+    size_t bytes = pomelo_payload_calc_packed_uint64_bytes(value);
+    pomelo_check(pomelo_payload_write_packed_uint64(&payload, bytes, value) == 0);
+    pomelo_check(payload.position == bytes);
+
+    // Read back
+    payload.position = 0;
+    uint64_t read_value = 0;
+    int ret = pomelo_payload_read_packed_uint64(&payload, bytes, &read_value);
+    pomelo_check(ret == 0);
+    pomelo_check(read_value == value);
     return 0;
 }

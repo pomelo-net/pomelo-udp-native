@@ -2,10 +2,25 @@
 #define POMELO_API_PLUGIN_CHANNEL_SRC_H
 #include "api/channel.h"
 #include "plugin.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+
+/// @brief The channel plugin info
+typedef struct pomelo_channel_plugin_info_s pomelo_channel_plugin_info_t;
+
+
+struct pomelo_channel_plugin_info_s {
+    /// @brief The session
+    pomelo_session_plugin_t * session;
+
+    /// @brief The index of channel
+    size_t index;
+
+    /// @brief The mode of channel
+    pomelo_channel_mode mode;
+};
 
 
 struct pomelo_channel_plugin_s {
@@ -27,15 +42,12 @@ pomelo_channel_methods_t * pomelo_channel_plugin_methods(void);
 /// @brief Initialize the channel
 int pomelo_channel_plugin_init(
     pomelo_channel_plugin_t * channel,
-    pomelo_session_plugin_t * session
+    pomelo_channel_plugin_info_t * info
 );
 
 
-/// @brief Destroy the channel
-int pomelo_channel_plugin_finalize(
-    pomelo_channel_plugin_t * channel,
-    pomelo_session_plugin_t * session
-);
+/// @brief Cleanup the channel
+void pomelo_channel_plugin_cleanup(pomelo_channel_plugin_t * channel);
 
 
 /// @brief Set mode for builtin channel
@@ -52,7 +64,7 @@ pomelo_channel_mode pomelo_channel_plugin_get_mode(
 
 
 /// @brief Send message through builtin channel
-int pomelo_channel_plugin_send(
+void pomelo_channel_plugin_send(
     pomelo_channel_plugin_t * channel,
     pomelo_message_t * message
 );

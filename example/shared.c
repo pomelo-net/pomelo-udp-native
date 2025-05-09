@@ -25,19 +25,19 @@ void pomelo_example_env_init(
     // Create platform
     uv_loop_t * loop = &env->loop;
     uv_loop_init(loop);
-    pomelo_platform_uv_options_t platform_options;
-    pomelo_platform_uv_options_init(&platform_options);
-    platform_options.allocator = allocator;
-    platform_options.uv_loop = loop;
+    pomelo_platform_uv_options_t platform_options = {
+        .allocator = allocator,
+        .uv_loop = loop
+    };
     pomelo_platform_t * platform = pomelo_platform_uv_create(&platform_options);
     assert(platform != NULL);
     env->platform = platform;
     pomelo_platform_startup(platform);
 
     // Create context
-    pomelo_context_root_options_t context_options;
-    pomelo_context_root_options_init(&context_options);
-    context_options.allocator = allocator;
+    pomelo_context_root_options_t context_options = {
+        .allocator = allocator
+    };
     pomelo_context_t * context = pomelo_context_root_create(&context_options);
     assert(context != NULL);
     env->context = context;
@@ -62,13 +62,12 @@ void pomelo_example_env_init(
     }
 
     // Create socket
-    pomelo_socket_options_t options;
-    pomelo_socket_options_init(&options);
-    options.allocator = env->allocator;
-    options.channel_modes = CHANNEL_MODES;
-    options.context = env->context;
-    options.nchannels = sizeof(CHANNEL_MODES) / sizeof(CHANNEL_MODES[0]);
-    options.platform = env->platform;
+    pomelo_socket_options_t options = {
+        .channel_modes = CHANNEL_MODES,
+        .context = env->context,
+        .nchannels = sizeof(CHANNEL_MODES) / sizeof(CHANNEL_MODES[0]),
+        .platform = env->platform
+    };
 
     pomelo_socket_t * socket = pomelo_socket_create(&options);
     assert(socket != NULL);
@@ -89,7 +88,7 @@ void pomelo_example_env_finalize(pomelo_example_env_t * env) {
     pomelo_context_destroy(context);
     
     // Destroy the platform
-    pomelo_platform_shutdown(platform);
+    pomelo_platform_shutdown(platform, NULL);
     pomelo_platform_uv_destroy(platform);
 
     // Close UV loop

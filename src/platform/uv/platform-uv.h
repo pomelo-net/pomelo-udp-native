@@ -4,17 +4,38 @@
 #include "pomelo/platforms/platform-uv.h"
 #include "base/extra.h"
 #include "platform/platform.h"
-#include "platform-task-main.h"
-#include "platform-task-worker.h"
-#include "platform-task-group.h"
-#include "platform-task-deferred.h"
-#include "platform/common/platform-udp.h"
-#include "platform/common/platform-timer.h"
-
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+
+#define POMELO_PLATFORM_UV_COMPONENT_TIMER      (1 << 0)
+#define POMELO_PLATFORM_UV_COMPONENT_UDP        (1 << 1)
+#define POMELO_PLATFORM_UV_COMPONENT_WORKER     (1 << 2)
+#define POMELO_PLATFORM_UV_COMPONENT_THREADSAFE (1 << 3)
+#define POMELO_PLATFORM_UV_COMPONENT_ALL (    \
+    POMELO_PLATFORM_UV_COMPONENT_TIMER      | \
+    POMELO_PLATFORM_UV_COMPONENT_UDP        | \
+    POMELO_PLATFORM_UV_COMPONENT_WORKER     | \
+    POMELO_PLATFORM_UV_COMPONENT_THREADSAFE   \
+)
+
+/// @brief The timer controller
+typedef struct pomelo_platform_timer_controller_s
+    pomelo_platform_timer_controller_t;
+
+/// @brief The udp controller
+typedef struct pomelo_platform_udp_controller_s
+    pomelo_platform_udp_controller_t;
+
+/// @brief The worker controller
+typedef struct pomelo_platform_worker_controller_s
+    pomelo_platform_worker_controller_t;
+
+/// @brief The threadsafe controller
+typedef struct pomelo_platform_threadsafe_controller_s
+    pomelo_platform_threadsafe_controller_t;
 
 
 struct pomelo_platform_s {
@@ -27,25 +48,34 @@ struct pomelo_platform_s {
     /// @brief The uv loop
     uv_loop_t * uv_loop;
 
+    /// @brief The flag of running
+    bool running;
+
+    /// @brief The idle handle for shutdown
+    uv_idle_t shutdown_idle;
+
+    /// @brief The shutdown callback
+    pomelo_platform_shutdown_callback shutdown_callback;
+
+    /// @brief The bitmask of shutdown components
+    uint32_t shutdown_components;
+
     /// @brief The timer manager
     pomelo_platform_timer_controller_t * timer_controller;
 
     /// @brief The socket manager
     pomelo_platform_udp_controller_t * udp_controller;
 
-    /// @brief Deferred task controller
-    pomelo_platform_task_deferred_controller_t * task_deferred_controller;
-    
-    /// @brief Worker task controller
-    pomelo_platform_task_worker_controller_t * task_worker_controller;
+    /// @brief Worker controller
+    pomelo_platform_worker_controller_t * worker_controller;
 
-    /// @brief Main task controller
-    pomelo_platform_task_main_controller_t * task_main_controller;
-
-    /// @brief Pool of task groups
-    pomelo_pool_t * task_group_pool;
+    /// @brief Threadsafe controller
+    pomelo_platform_threadsafe_controller_t * threadsafe_controller;
 };
 
+
+/// @brief Check if the platform is shutdown
+void pomelo_platform_check_shutdown(pomelo_platform_t * platform);
 
 #ifdef __cplusplus
 }

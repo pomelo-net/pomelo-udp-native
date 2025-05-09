@@ -1,12 +1,12 @@
 #include <assert.h>
 #include "pomelo-test.h"
-#include "pomelo/token.h"
+#include "pomelo/random.h"
 #include "protocol/protocol.h"
 #include "adapter/adapter.h"
 #include "pomelo/platforms/platform-uv.h"
-#include "codec/codec.h"
+#include "crypto/crypto.h"
 #include "protocol/socket.h"
-
+#include "statistic-check/statistic-check.h"
 
 /*
     With unencrypted test: We have to write a customized adapter since
@@ -22,7 +22,7 @@
 // Constants
 #define SOCKET_ADDRESS "127.0.0.1:8888"
 #define MAX_CLIENTS 10
-#define CONNECT_TIMEOUT 1 // seconds
+#define CONNECT_TIMEOUT 10 // seconds
 #define TOKEN_EXPIRE 3600 // seconds
 
 
@@ -30,10 +30,15 @@
 static uv_loop_t uv_loop;
 static pomelo_allocator_t * allocator;
 static pomelo_platform_t * platform;
+static pomelo_sequencer_t sequencer;
+
+// Adapters
+static pomelo_adapter_t * adapter_client;
+static pomelo_adapter_t * adapter_server;
 
 // Contexts
-static pomelo_buffer_context_root_t * buffer_ctx;
-static pomelo_protocol_context_root_t * protocol_ctx;
+static pomelo_buffer_context_t * buffer_ctx;
+static pomelo_protocol_context_t * protocol_ctx;
 
 // Sockets
 static pomelo_protocol_socket_t * client;
@@ -44,7 +49,7 @@ static uint8_t private_key[POMELO_KEY_BYTES];
 static uint8_t connect_token[POMELO_CONNECT_TOKEN_BYTES];
 
 // Global variables
-static int stopped_count;
+static int connected_count;
 
 static uint64_t protocol_id;
 static int64_t client_id;
@@ -54,7 +59,7 @@ static uint64_t sample_v2;
 // Temp variables
 static pomelo_connect_token_t token;
 static pomelo_platform_uv_options_t platform_options;
-static pomelo_protocol_context_root_options_t protocol_ctx_opts;
+static pomelo_protocol_context_options_t protocol_ctx_opts;
 static pomelo_buffer_context_root_options_t buffer_ctx_opts;
 static pomelo_protocol_client_options_t client_options;
 static pomelo_protocol_server_options_t server_options;
@@ -63,7 +68,7 @@ static pomelo_protocol_server_options_t server_options;
 int main(void) {
     printf("Test protocol.\n");
 
-    if (pomelo_codec_init() < 0) {
+    if (pomelo_crypto_init() < 0) {
         printf("Failed to initialize codec.\n");
         return -1;
     }
@@ -76,99 +81,94 @@ int main(void) {
     uv_loop_init(&uv_loop);
 
     // Create platform
-    pomelo_platform_uv_options_init(&platform_options);
+    memset(&platform_options, 0, sizeof(pomelo_platform_uv_options_t));
     platform_options.allocator = allocator;
     platform_options.uv_loop = &uv_loop;
     platform = pomelo_platform_uv_create(&platform_options);
     pomelo_check(platform != NULL);
     pomelo_platform_startup(platform);
 
+    // Initialize sequencer
+    pomelo_sequencer_init(&sequencer);
+
     // Create buffer context
-    pomelo_buffer_context_root_options_init(&buffer_ctx_opts);
+    memset(&buffer_ctx_opts, 0, sizeof(pomelo_buffer_context_root_options_t));
     buffer_ctx_opts.allocator = allocator;
-    buffer_ctx_opts.buffer_capacity = POMELO_PACKET_BUFFER_CAPACITY_DEFAULT;
+    buffer_ctx_opts.buffer_capacity = POMELO_BUFFER_CAPACITY;
     buffer_ctx = pomelo_buffer_context_root_create(&buffer_ctx_opts);
     pomelo_check(buffer_ctx != NULL);
 
     // Create protocol context
-    pomelo_protocol_context_root_options_init(&protocol_ctx_opts);
+    memset(&protocol_ctx_opts, 0, sizeof(pomelo_protocol_context_options_t));
     protocol_ctx_opts.allocator = allocator;
-    protocol_ctx_opts.buffer_context = buffer_ctx;
-    protocol_ctx_opts.packet_capacity = POMELO_PACKET_BUFFER_CAPACITY_DEFAULT;
-    protocol_ctx = pomelo_protocol_context_root_create(&protocol_ctx_opts);
+    protocol_ctx_opts.buffer_context = (pomelo_buffer_context_t *) buffer_ctx;
+    protocol_ctx_opts.payload_capacity = POMELO_PACKET_BODY_CAPACITY;
+    protocol_ctx = pomelo_protocol_context_create(&protocol_ctx_opts);
     pomelo_check(protocol_ctx != NULL);
 
     // Generate private key
-    ret = pomelo_codec_buffer_random(private_key, sizeof(private_key));
-    pomelo_check(ret == 0);
+    pomelo_random_buffer(private_key, sizeof(private_key));
 
     // Random values
-    ret = pomelo_codec_buffer_random(
-        (uint8_t *) &protocol_id,
-        sizeof(protocol_id)
-    );
-    pomelo_check(ret == 0);
-    ret = pomelo_codec_buffer_random(
-        (uint8_t *) &client_id,
-        sizeof(client_id)
-    );
-    pomelo_check(ret == 0);
-    ret = pomelo_codec_buffer_random(
-        (uint8_t *) &sample_v1,
-        sizeof(sample_v1)
-    );
-    pomelo_check(ret == 0);
-    ret = pomelo_codec_buffer_random(
-        (uint8_t *) &sample_v2,
-        sizeof(sample_v2)
-    );
-    pomelo_check(ret == 0);
+    pomelo_random_buffer((uint8_t *) &protocol_id, sizeof(protocol_id));
+    pomelo_random_buffer((uint8_t *) &client_id, sizeof(client_id));
+    pomelo_random_buffer((uint8_t *) &sample_v1, sizeof(sample_v1));
+    pomelo_random_buffer((uint8_t *) &sample_v2, sizeof(sample_v2));
 
     // Create connect token
     token.protocol_id = protocol_id;
     token.create_timestamp = pomelo_platform_now(platform);
     token.expire_timestamp = token.create_timestamp + TOKEN_EXPIRE * 1000ULL;
-    ret = pomelo_codec_buffer_random(
+    pomelo_random_buffer(
         token.connect_token_nonce,
         sizeof(token.connect_token_nonce)
     );
-    pomelo_check(ret == 0);
     token.timeout = CONNECT_TIMEOUT;
     token.naddresses = 1;
     ret = pomelo_address_from_string(&token.addresses[0], SOCKET_ADDRESS);
     pomelo_check(ret == 0);
 
-    ret = pomelo_codec_buffer_random(
+    pomelo_random_buffer(
         token.client_to_server_key,
         sizeof(token.client_to_server_key)
     );
-    pomelo_check(ret == 0);
 
-    ret = pomelo_codec_buffer_random(
+    pomelo_random_buffer(
         token.server_to_client_key,
         sizeof(token.server_to_client_key)
     );
-    pomelo_check(ret == 0);
     token.client_id = client_id;
+
+    // Create adapter
+    pomelo_adapter_options_t adapter_options = {
+        .allocator = allocator,
+        .platform = platform
+    };
+    adapter_client = pomelo_adapter_create(&adapter_options);
+    pomelo_check(adapter_client != NULL);
+    adapter_server = pomelo_adapter_create(&adapter_options);
+    pomelo_check(adapter_server != NULL);
 
     // Encode connect token
     ret = pomelo_connect_token_encode(connect_token, &token, private_key);
     pomelo_check(ret == 0);
 
     // Create client
-    pomelo_protocol_client_options_init(&client_options);
-    client_options.allocator = allocator;
-    client_options.context = (pomelo_protocol_context_t *) protocol_ctx;
+    memset(&client_options, 0, sizeof(pomelo_protocol_client_options_t));
+    client_options.context = protocol_ctx;
     client_options.platform = platform;
+    client_options.adapter = adapter_client;
     client_options.connect_token = connect_token;
+    client_options.sequencer = &sequencer;
     client = pomelo_protocol_client_create(&client_options);
     pomelo_check(client != NULL);
 
     // Create server
-    pomelo_protocol_server_options_init(&server_options);
-    server_options.allocator = allocator;
-    server_options.context = (pomelo_protocol_context_t *) protocol_ctx;
+    memset(&server_options, 0, sizeof(pomelo_protocol_server_options_t));
+    server_options.context = protocol_ctx;
     server_options.platform = platform;
+    server_options.adapter = adapter_server;
+    server_options.sequencer = &sequencer;
     server_options.private_key = private_key;
     server_options.protocol_id = protocol_id;
     server_options.max_clients = MAX_CLIENTS;
@@ -178,13 +178,19 @@ int main(void) {
     pomelo_check(server != NULL);
 
     // Check the capacity of server
-    pomelo_adapter_t * adapter = server->adapter;
-    uint8_t capacity = pomelo_adapter_get_capability(adapter);
-    if (capacity & POMELO_ADAPTER_CAPABILITY_ENCRYPTED) {
-        printf("Adapter capacity: Encrypted\n");
+    uint32_t capability = pomelo_adapter_get_capability(adapter_server);
+    printf("Adapter capability: %u\n", capability);
+    if (capability & POMELO_ADAPTER_CAPABILITY_SERVER_ENCRYPTED) {
+        printf(" + Server encrypted\n");
     }
-    if (capacity & POMELO_ADAPTER_CAPABILITY_UNENCRYPTED) {
-        printf("Adapter capacity: Unencrypted\n");
+    if (capability & POMELO_ADAPTER_CAPABILITY_SERVER_UNENCRYPTED) {
+        printf(" + Server unencrypted\n");
+    }
+    if (capability & POMELO_ADAPTER_CAPABILITY_CLIENT_ENCRYPTED) {
+        printf(" + Client encrypted\n");
+    }
+    if (capability & POMELO_ADAPTER_CAPABILITY_CLIENT_UNENCRYPTED) {
+        printf(" + Client unencrypted\n");
     }
 
     // Start server
@@ -202,12 +208,26 @@ int main(void) {
     uv_loop_close(&uv_loop);
     pomelo_protocol_socket_destroy(server);
     pomelo_protocol_socket_destroy(client);
+    pomelo_adapter_destroy(adapter_client);
+    pomelo_adapter_destroy(adapter_server);
+
+    // Check resource leak
+    pomelo_statistic_protocol_t protocol_statistic;
+    pomelo_protocol_context_statistic(protocol_ctx, &protocol_statistic);
+    pomelo_statistic_protocol_check_resource_leak(&protocol_statistic);
+
+    pomelo_statistic_buffer_t buffer_statistic;
+    pomelo_buffer_context_statistic(buffer_ctx, &buffer_statistic);
+    pomelo_statistic_buffer_check_resource_leak(&buffer_statistic);
+
     pomelo_platform_uv_destroy(platform);
-    pomelo_protocol_context_root_destroy(protocol_ctx);
-    pomelo_buffer_context_root_destroy(buffer_ctx);
+    pomelo_protocol_context_destroy(protocol_ctx);
+    pomelo_buffer_context_destroy(buffer_ctx);
 
     // Check memleak
     pomelo_check(alloc_bytes == pomelo_allocator_allocated_bytes(allocator));
+    pomelo_check(connected_count == 2);
+
     printf("Test passed!\n");
     return 0;
 }
@@ -223,25 +243,45 @@ void pomelo_protocol_socket_on_connected(
     assert(socket != NULL);
     assert(peer != NULL);
 
+    connected_count++;
     if (socket == client) {
-        printf("Client connected.\n");
+        printf("Client connected. Sending a payload to server...\n");
         // After connected, client will send a payload to server
-        pomelo_buffer_t * buffer =
-            pomelo_buffer_context_root_acquire(buffer_ctx);
+        pomelo_buffer_t * buffer = pomelo_buffer_context_acquire(buffer_ctx);
         pomelo_check(buffer != NULL);
         memset(buffer->data, 0, buffer->capacity);
 
+        pomelo_buffer_t * buffer_2 = pomelo_buffer_context_acquire(buffer_ctx);
+        pomelo_check(buffer_2 != NULL);
+        memset(buffer_2->data, 0, buffer_2->capacity);
+
         pomelo_payload_t payload;
         payload.data = buffer->data;
-        payload.capacity = POMELO_PACKET_PAYLOAD_BODY_CAPACITY_DEFAULT;
+        payload.capacity = POMELO_PACKET_BODY_CAPACITY;
         payload.position = 0;
 
         pomelo_payload_write_int32(&payload, sample_v1);
-        pomelo_payload_write_uint64(&payload, sample_v2);
-        
-        int ret = pomelo_protocol_peer_send(peer, buffer, 0, payload.position);
+
+        pomelo_buffer_view_t views[2];
+        views[0].buffer = buffer;
+        views[0].offset = 0;
+        views[0].length = payload.position;
+
+        pomelo_payload_t payload_2;
+        payload_2.data = buffer_2->data;
+        payload_2.capacity = POMELO_PACKET_BODY_CAPACITY;
+        payload_2.position = 0;
+        pomelo_payload_write_uint64(&payload_2, sample_v2);
+
+        views[1].buffer = buffer_2;
+        views[1].offset = 0;
+        views[1].length = payload_2.position;
+
+        int ret = pomelo_protocol_peer_send(peer, views, 2);
         pomelo_check(ret == 0);
+
         pomelo_buffer_unref(buffer);
+        pomelo_buffer_unref(buffer_2);
     } else {
         printf("Server connected.\n");
     }
@@ -265,27 +305,28 @@ void pomelo_protocol_socket_on_disconnected(
 void pomelo_protocol_socket_on_received(
     pomelo_protocol_socket_t * socket,
     pomelo_protocol_peer_t * peer,
-    pomelo_buffer_t * buffer,
-    size_t offset,
-    size_t length
+    pomelo_buffer_view_t * view
 ) {
     assert(socket != NULL);
     assert(peer != NULL);
-    assert(buffer != NULL);
+    assert(view != NULL);
 
     if (socket == server) {
-        printf("Server got %zu bytes from client\n", length);
+        printf("Server got %zu bytes from client\n", view->length);
         // Echo the payload
-        pomelo_protocol_peer_send(peer, buffer, offset, length);
+        pomelo_protocol_peer_send(peer, view, 1);
+        pomelo_protocol_socket_stop(client);
+        pomelo_protocol_socket_stop(server);
+        // pomelo_platform_shutdown(platform, NULL);
     } else {
-        printf("Client got %zu bytes from server\n", length);
+        printf("Client got %zu bytes from server\n", view->length);
         int32_t v1 = 0;
         uint64_t v2 = 0;
 
         pomelo_payload_t payload;
-        payload.data = buffer->data + offset;
+        payload.data = view->buffer->data + view->offset;
         payload.position = 0;
-        payload.capacity = length;
+        payload.capacity = view->length;
         
         int ret = pomelo_payload_read_int32(&payload, &v1);
         pomelo_check(ret == 0);
@@ -296,15 +337,6 @@ void pomelo_protocol_socket_on_received(
         pomelo_check(v2 == sample_v2);
         pomelo_protocol_peer_disconnect(peer);
         printf("Disconnecting... It may take upto 1 second...\n");
-    }
-}
-
-
-void pomelo_protocol_socket_on_stopped(pomelo_protocol_socket_t * socket) {
-    (void) socket;
-    if (++stopped_count == 2) {
-        printf("Shutting down...\n");
-        pomelo_platform_shutdown(platform);
     }
 }
 

@@ -42,6 +42,17 @@ void pomelo_example_connect_socket(void) {
 /*                          Socket API implementation                         */
 /* -------------------------------------------------------------------------- */
 
+
+void pomelo_session_on_cleanup(pomelo_session_t * session) {
+    (void) session;
+}
+
+
+void pomelo_channel_on_cleanup(pomelo_channel_t * channel) {
+    (void) channel;
+}
+
+
 void pomelo_socket_on_connected(
     pomelo_socket_t * socket,
     pomelo_session_t * session
@@ -52,13 +63,13 @@ void pomelo_socket_on_connected(
     printf("On connected: %" PRId64 "\n", client_id);
 
     // Acquire new message and send it to server
-    pomelo_message_t * message = pomelo_message_new(env.context);
+    pomelo_message_t * message = pomelo_context_acquire_message(env.context);
     pomelo_assert(message != NULL);
     pomelo_message_write_int32(message, 12345);
     pomelo_message_write_uint64(message, 887722);
 
-    int ret = pomelo_session_send(session, 0, message);
-    pomelo_assert(ret == 0);
+    pomelo_session_send(session, 0, message, NULL);
+    pomelo_message_unref(message);
 }
 
 
@@ -94,13 +105,7 @@ void pomelo_socket_on_received(
     printf("Disconnecting...\n");
     pomelo_session_disconnect(session);
     // Stop socket here will cause crash
-}
-
-
-void pomelo_socket_on_stopped(pomelo_socket_t * socket) {
-    (void) socket;
-    printf("Socket has stopped.\n");
-    pomelo_platform_shutdown(env.platform);
+    // TODO: Shutdown the platform
 }
 
 
@@ -113,17 +118,24 @@ void pomelo_socket_on_connect_result(
 }
 
 
-void pomelo_message_on_released(pomelo_message_t * message) {
+void pomelo_socket_on_send_result(
+    pomelo_socket_t * socket,
+    pomelo_message_t * message,
+    void * data,
+    size_t send_count
+) {
+    (void) socket;
     (void) message;
+    (void) data;
+    (void) send_count;
 }
-
 
 /* -------------------------------------------------------------------------- */
 /*                          HTTP connect token client                         */
 /* -------------------------------------------------------------------------- */
 
 #define POMELO_CONNECT_TOKEN_BASE64_LENGTH                                     \
-    pomelo_codec_base64_calc_encoded_length(POMELO_CONNECT_TOKEN_BYTES)
+    pomelo_base64_calc_encoded_length(POMELO_CONNECT_TOKEN_BYTES)
 
 
 typedef struct {
@@ -165,7 +177,7 @@ static void http_client_on_closed(uv_handle_t * handle) {
     (void) handle;
 
     // Got connect token b64, decode it
-    int ret = pomelo_codec_base64_decode(
+    int ret = pomelo_base64_decode(
         connect_token,
         sizeof(connect_token),
         http_state.body,
@@ -236,8 +248,8 @@ static void http_client_callback(uv_connect_t * req, int status) {
 static void http_client_request_connect_token(void) {
     printf(
         "Start getting connect token from http://%s:%d\n",
-        ADDRESS_HOST,
-        ADDRESS_PORT
+        SERVICE_HOST,
+        SERVICE_PORT
     );
 
     // Start HTTP server

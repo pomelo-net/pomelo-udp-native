@@ -28,17 +28,23 @@ struct pomelo_adapter_s {
 };
 
 
+void pomelo_adapter_alloc_callback(
+    pomelo_adapter_t * adapter,
+    pomelo_platform_iovec_t * iovec
+);
+
+
 /// @brief Receiving callback of adapter
 void pomelo_adapter_recv_callback(
     pomelo_adapter_t * adapter,
     pomelo_address_t * address,
-    pomelo_buffer_vector_t * buffer_vector,
+    pomelo_platform_iovec_t * iovec,
     int status
 );
 
 
-/// @brief Initialize callbacks
-void pomelo_adapter_init_callbacks(pomelo_adapter_t * adapter);
+/// @brief Start receiving packets from UDP socket
+void pomelo_adapter_recv_start(pomelo_adapter_t * adapter);
 
 
 #ifdef __cplusplus

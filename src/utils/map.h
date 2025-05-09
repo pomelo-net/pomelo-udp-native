@@ -4,7 +4,6 @@
 #include "list.h"
 #include "mutex.h"
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,7 +30,7 @@ typedef struct pomelo_map_s pomelo_map_t;
 typedef struct pomelo_map_iterator_s pomelo_map_iterator_t;
 
 /// @brief Hash function of map
-typedef int64_t (*pomelo_map_hash_fn)(
+typedef size_t (*pomelo_map_hash_fn)(
     pomelo_map_t * map,
     void * callback_context,
     void * p_key
@@ -53,15 +52,31 @@ struct pomelo_map_entry_s {
 
     /// @brief The map element value
     void * p_value;
+
+    /// @brief The bucket of this entry
+    pomelo_map_bucket_t * bucket;
+
+    /// @brief The list entry of this entry in the bucket
+    pomelo_list_entry_t * bucket_entry;
+
+#ifndef NDEBUG
+    /// @brief The signature of this entry
+    int signature;
+#endif
 };
 
 
 struct pomelo_map_bucket_s {
+    /// @brief The map of this bucket
+    pomelo_map_t * map;
+
     /// @brief The list of elements in this bucket
     pomelo_list_t * entries;
 
-    /// @brief The size of bucket (For redistributing purpose)
-    size_t size;
+#ifndef NDEBUG
+    /// @brief The signature of this bucket
+    int signature;
+#endif
 };
 
 
@@ -84,14 +99,14 @@ struct pomelo_map_s {
     /// @brief Key size
     size_t key_size;
 
-    /// @brief The number of buckets
-    size_t nbuckets;
-
-    /// @brief The dynamic array of buckets
+    /// @brief The array of buckets.
     pomelo_array_t * buckets;
 
     /// @brief The pool of entries
     pomelo_pool_t * entry_pool;
+
+    /// @brief The pool of buckets
+    pomelo_pool_t * bucket_pool;
 
     /// @brief The load factor of map
     float load_factor;
@@ -108,9 +123,18 @@ struct pomelo_map_s {
     /// @brief Context for hashing and comparing functions
     void * callback_context;
 
+    /// @brief The context of bucket entries lists
+    pomelo_list_context_t * bucket_entries_context;
+
 #ifndef NDEBUG
     /// @brief The signature of map
     int signature;
+
+    /// @brief The signature of buckets
+    int bucket_signature;
+
+    /// @brief The signature of entries
+    int entry_signature;
 #endif
 };
 
@@ -156,8 +180,8 @@ struct pomelo_map_iterator_s {
     /// @brief The current bucket index
     size_t bucket_index;
 
-    /// @brief The current list node of entry
-    pomelo_list_node_t * node;
+    /// @brief The current list entry of iterator
+    pomelo_list_entry_t * entry;
 
     /// @brief Modified count when this iterator is started
     uint64_t mod_count;
@@ -168,53 +192,75 @@ struct pomelo_map_iterator_s {
 /*                               Public APIs                                  */
 /* -------------------------------------------------------------------------- */
 
-/// @brief Set the default options for map
-void pomelo_map_options_init(pomelo_map_options_t * options);
-
 /// @brief Create new map
 pomelo_map_t * pomelo_map_create(pomelo_map_options_t * options);
+
 
 /// @brief Destroy a map
 void pomelo_map_destroy(pomelo_map_t * map);
 
+
 /// @brief Get a value from map (pointer version)
 /// @return Returns 0 if entry is found or -1 if not
-int pomelo_map_get_p(pomelo_map_t * map, void * p_key, void * p_value);
+int pomelo_map_get_ptr(pomelo_map_t * map, void * p_key, void * p_value);
+
 
 /// @brief Get the value from map
 /// @return Returns 0 if entry is found or -1 if not
-#define pomelo_map_get(map, key, p_value) pomelo_map_get_p(map, &(key), p_value)
+#define pomelo_map_get(map, key, p_value)                                      \
+    pomelo_map_get_ptr(map, &(key), p_value)
+
 
 /// @brief Check if key exists in the map (pointer version)
 /// @return Returns true if key exists or false if not
-bool pomelo_map_has_p(pomelo_map_t * map, void * p_key);
+bool pomelo_map_has_ptr(pomelo_map_t * map, void * p_key);
+
 
 /// @brief Check if key exists in the map (pointer version)
 /// @return Returns 1 if key exists or 0 if not
-#define pomelo_map_has(map, key) pomelo_map_has_p(map, &(key))
+#define pomelo_map_has(map, key) pomelo_map_has_ptr(map, &(key))
+
 
 /// @brief Set a value with key to map (Pointer version).
 /// It will override existent key
-/// @return Return 0 on success or -1 on failure
-int pomelo_map_set_p(pomelo_map_t * map, void * p_key, void * p_value);
+/// @return New entry on success or NULL on failure
+pomelo_map_entry_t * pomelo_map_set_ptr(
+    pomelo_map_t * map,
+    void * p_key,
+    void * p_value
+);
+
 
 /// @brief Set a value with key to map.
-/// @return Return 0 on success or -1 on failure
-#define pomelo_map_set(map, key, value) pomelo_map_set_p(map, &(key), &(value))
+/// @return New entry on success or NULL on failure
+#define pomelo_map_set(map, key, value)                                        \
+    pomelo_map_set_ptr(map, &(key), &(value))
+
 
 /// @brief Delete a key from map (Pointer version)
 /// @return Return 0 on success or -1 if key is not found
-int pomelo_map_del_p(pomelo_map_t * map, void * p_key);
+int pomelo_map_del_ptr(pomelo_map_t * map, void * p_key);
+
 
 /// @brief Delete a key from map
 /// @return Return 0 on success or -1 if key is not found
-#define pomelo_map_del(map, key) pomelo_map_del_p(map, &(key))
+#define pomelo_map_del(map, key) pomelo_map_del_ptr(map, &(key))
+
+
+/// @brief Remove an entry from map
+void pomelo_map_remove(pomelo_map_t * map, pomelo_map_entry_t * entry);
+
 
 /// @brief Clear all entries of map
 void pomelo_map_clear(pomelo_map_t * map);
 
-/// @brief Iterate over the map. This API is not threadsafe
-void pomelo_map_iterate(pomelo_map_t * map, pomelo_map_iterator_t * it);
+
+/// @brief Initialize the iterator of map
+void pomelo_map_iterator_init(
+    pomelo_map_iterator_t * it,
+    pomelo_map_t * map
+);
+
 
 /// @brief Next map iteration.
 /// Iterating modified map will return an error code.
@@ -222,14 +268,65 @@ void pomelo_map_iterate(pomelo_map_t * map, pomelo_map_iterator_t * it);
 /// modified.
 int pomelo_map_iterator_next(
     pomelo_map_iterator_t * it,
-    pomelo_map_entry_t * entry
+    pomelo_map_entry_t ** p_entry
 );
+
+
+/// @brief Remove the current entry of iterator
+void pomelo_map_iterator_remove(pomelo_map_iterator_t * it);
+
 
 /// @brief Get the value of entry
 #define pomelo_map_entry_value(entry, type) *((type*) (entry)->p_value)
 
+
 /// @brief Get the value of entry. The type of value must be a pointer
 #define pomelo_map_entry_value_ptr(entry) pomelo_map_entry_value(entry, void *)
+
+
+/* -------------------------------------------------------------------------- */
+/*                              Internal APIs                                 */
+/* -------------------------------------------------------------------------- */
+
+/// @brief Resize the buckets of map
+bool pomelo_map_resize_buckets(pomelo_map_t * map, size_t new_nbuckets);
+
+
+/// @brief Create entry
+pomelo_map_entry_t * pomelo_map_set_entry(
+    pomelo_map_t * map,
+    void * p_key,
+    void * p_value
+);
+
+
+/// @brief Remove entry
+void pomelo_map_del_entry(pomelo_map_t * map, pomelo_map_entry_t * entry);
+
+
+/// @brief Find entry
+pomelo_map_entry_t * pomelo_map_find_entry(pomelo_map_t * map, void * p_key);
+
+
+/// @brief Clear all entries of map, keep the buckets
+void pomelo_map_clear_entries(pomelo_map_t * map);
+
+
+/// @brief Initialize the bucket
+int pomelo_map_bucket_init(pomelo_map_bucket_t * bucket, pomelo_map_t * map);
+
+
+/// @brief Cleanup the bucket
+void pomelo_map_bucket_cleanup(pomelo_map_bucket_t * bucket);
+
+
+/// @brief Clear all entries of bucket
+void pomelo_map_bucket_clear_entries(pomelo_map_bucket_t * bucket);
+
+
+/// @brief Redistribute the entries of bucket
+void pomelo_map_bucket_redistribute(pomelo_map_bucket_t * bucket);
+
 
 #ifdef __cplusplus
 }

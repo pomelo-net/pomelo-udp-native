@@ -9,103 +9,106 @@
 
 #define POMELO_LIST_SIGNATURE 0x27e241
 
-// Signature counter for debugging
-static int node_signature_counter = 0;
+// Signature generator for debugging
+static int entry_signature_generator = 0;
 
 #define pomelo_list_check_signature(list)                                      \
-    assert(list->signature == POMELO_LIST_SIGNATURE)
+    assert((list)->signature == POMELO_LIST_SIGNATURE)
+
+#define pomelo_list_entry_check_signature(list, entry)                          \
+    assert((entry)->signature == (list)->entry_signature)
+
 #else // Release mode
-#define pomelo_list_check_signature(list) (void) list
+
+#define pomelo_list_check_signature(list)
+#define pomelo_list_entry_check_signature(list, entry)
+
 #endif
+
+
+/// @brief Get element address from node
+#define pomelo_list_element_ptr(entry) ((void *)((entry) + 1))
+
 
 /* -------------------------------------------------------------------------- */
 /*                               Private APIs                                 */
 /* -------------------------------------------------------------------------- */
 
-/// @brief Initialize node
-static int pomelo_list_node_init(
-    pomelo_list_node_t * node,
-    pomelo_list_t * list
+/// @brief Link an entry to the back of the list
+static void pomelo_list_link_back(
+    pomelo_list_t * list,
+    pomelo_list_entry_t * entry
 ) {
-    assert(node != NULL);
-    assert(list != NULL);
+    if (list->size == 0) {
+        // Empty
+        list->front = entry;
+        list->back = entry;
+        entry->next = NULL;
+        entry->prev = NULL;
+    } else {
+        entry->prev = list->back;
+        entry->next = NULL;
+        list->back->next = entry;
+        list->back = entry;
+    }
 
-    node->next = NULL;
-    node->prev = NULL;
+    list->size++;
+    list->mod_count++;
+}
+
+
+/// @brief Append new entry to back of the list
+static pomelo_list_entry_t * pomelo_list_append_back(pomelo_list_t * list) {
+    pomelo_list_entry_t * entry =
+        pomelo_pool_acquire(list->context->entry_pool, NULL);
+    if (!entry) return NULL;
 
 #ifndef NDEBUG
-    node->signature = list->node_signature;
-#else
-    (void) list;
+    entry->signature = list->entry_signature;
 #endif
 
-    return 0;
+    pomelo_list_link_back(list, entry);
+    return entry;
 }
 
 
-/// @brief Append new node to back of the list
-static pomelo_list_node_t * pomelo_list_append_back(pomelo_list_t * list) {
-    assert(list != NULL);
-    pomelo_list_check_signature(list);
+/// @brief Append new entry to front of the list
+static pomelo_list_entry_t * pomelo_list_append_front(pomelo_list_t * list) {
+    pomelo_list_entry_t * entry =
+        pomelo_pool_acquire(list->context->entry_pool, NULL);
+    if (!entry) return NULL;
 
-    pomelo_list_node_t * node = pomelo_pool_acquire(list->node_pool);
-    if (!node) {
-        return NULL;
-    }
+#ifndef NDEBUG
+    entry->signature = list->entry_signature;
+#endif
 
     if (list->size == 0) {
         // Empty
-        list->front = node;
-        list->back = node;
-        node->next = NULL;
-        node->prev = NULL;
+        list->front = entry;
+        list->back = entry;
+        entry->next = NULL;
+        entry->prev = NULL;
     } else {
-        node->prev = list->back;
-        node->next = NULL;
-        list->back->next = node;
-        list->back = node;
+        entry->next = list->front;
+        entry->prev = NULL;
+        list->front->prev = entry;
+        list->front = entry;
     }
 
     list->size++;
     list->mod_count++;
-    return node;
+    return entry;
 }
 
 
-/// @brief Append new node to front of the list
-static pomelo_list_node_t * pomelo_list_append_front(pomelo_list_t * list) {
-    pomelo_list_node_t * node = pomelo_pool_acquire(list->node_pool);
-    if (!node) {
-        return NULL;
-    }
-
-    if (list->size == 0) {
-        // Empty
-        list->front = node;
-        list->back = node;
-        node->next = NULL;
-        node->prev = NULL;
-    } else {
-        node->next = list->front;
-        node->prev = NULL;
-        list->front->prev = node;
-        list->front = node;
-    }
-
-    list->size++;
-    list->mod_count++;
-    return node;
-}
-
-
-/// @brief Remove a node
-static void pomelo_list_remove_node(
+/// @brief Just unlink the entry from list without releasing it
+static void pomelo_list_unlink_entry(
     pomelo_list_t * list,
-    pomelo_list_node_t * node
+    pomelo_list_entry_t * entry
 ) {
-    if (node == list->front) {
-        // Node is the front of list
-        list->front = node->next;
+    if (entry == list->front) {
+        // Entry is the front of list
+        list->front = entry->next;
         if (list->front != NULL) {
             // Non-empty list
             list->front->prev = NULL;
@@ -113,9 +116,9 @@ static void pomelo_list_remove_node(
             // Emtpy list
             list->back = NULL;
         }
-        node->next = NULL;
-    } else if (node == list->back) {
-        list->back = node->prev;
+        entry->next = NULL;
+    } else if (entry == list->back) {
+        list->back = entry->prev;
         if (list->back) {
             // Non-empty list
             list->back->next = NULL;
@@ -123,43 +126,89 @@ static void pomelo_list_remove_node(
             // Emtpy list
             list->front = NULL;
         }
-        node->prev = NULL;
+        entry->prev = NULL;
     } else {
-        if (!node->next && !node->prev) {
-            // The node has already been removed
+        if (!entry->next && !entry->prev) {
+            // The entry has already been removed
             return;
         }
 
-        pomelo_list_node_t * prev = node->prev;
-        pomelo_list_node_t * next = node->next;
+        pomelo_list_entry_t * prev = entry->prev;
+        pomelo_list_entry_t * next = entry->next;
         prev->next = next;
         next->prev = prev;
-        node->next = NULL;
-        node->prev = NULL;
+        entry->next = NULL;
+        entry->prev = NULL;
     }
 
     list->size--;
     list->mod_count++;
+}
 
-    // Release node to pool
-    pomelo_pool_release(list->node_pool, node);
+
+/// @brief Remove an entry
+static void pomelo_list_remove_entry(
+    pomelo_list_t * list,
+    pomelo_list_entry_t * entry
+) {
+    pomelo_list_unlink_entry(list, entry);
+    pomelo_pool_release(list->context->entry_pool, entry);
 }
 
 /* -------------------------------------------------------------------------- */
 /*                                Public APIs                                 */
 /* -------------------------------------------------------------------------- */
 
-void pomelo_list_options_init(pomelo_list_options_t * options) {
-    assert(options);
-    memset(options, 0, sizeof(pomelo_list_options_t));
+
+
+pomelo_list_context_t * pomelo_list_context_create(
+    pomelo_list_context_options_t * options
+) {
+    assert(options != NULL);
+
+    pomelo_allocator_t * allocator = options->allocator;
+    if (!allocator) {
+        allocator = pomelo_allocator_default();
+    }
+
+    pomelo_list_context_t * context =
+        pomelo_allocator_malloc_t(allocator, pomelo_list_context_t);
+    if (!context) {
+        return NULL; // Failed to allocate memory
+    }
+
+    memset(context, 0, sizeof(pomelo_list_context_t));
+    context->allocator = allocator;
+    context->element_size = options->element_size;
+
+    pomelo_pool_root_options_t pool_options = {
+        .allocator = allocator,
+        .element_size = sizeof(pomelo_list_entry_t) + options->element_size
+    };
+    context->entry_pool = pomelo_pool_root_create(&pool_options);
+    if (!context->entry_pool) {
+        pomelo_list_context_destroy(context);
+        return NULL; // Failed to create entry pool
+    }
+
+    return context;
+}
+
+
+void pomelo_list_context_destroy(pomelo_list_context_t * context) {
+    assert(context != NULL);
+    if (context->entry_pool) {
+        pomelo_pool_destroy(context->entry_pool);
+        context->entry_pool = NULL;
+    }
+
+    pomelo_allocator_free(context->allocator, context);
 }
 
 
 pomelo_list_t * pomelo_list_create(pomelo_list_options_t * options) {
     assert(options != NULL);
-    if (options->element_size == 0) {
-        return NULL;
-    }
+    if (!options->context && options->element_size == 0) return NULL;
 
     pomelo_allocator_t * allocator = options->allocator;
     if (!allocator) {
@@ -174,30 +223,28 @@ pomelo_list_t * pomelo_list_create(pomelo_list_options_t * options) {
 
     memset(list, 0, sizeof(pomelo_list_t));
     list->allocator = allocator;
-    list->element_size = options->element_size;
+
+    if (options->context) {
+        list->context_owned = false;
+        list->context = options->context;
+    } else {
+        list->context_owned = true;
+        pomelo_list_context_options_t context_options = {
+            .allocator = allocator,
+            .element_size = options->element_size
+        };
+        list->context = pomelo_list_context_create(&context_options);
+        if (!list->context) {
+            pomelo_list_destroy(list);
+            return NULL;
+        }
+    }
 
 #ifndef NDEBUG
     // Set signature for list
     list->signature = POMELO_LIST_SIGNATURE;
-    list->node_signature = node_signature_counter++;
+    list->entry_signature = entry_signature_generator++;
 #endif
-
-    // Create node pool
-    pomelo_pool_options_t pool_options;
-    pomelo_pool_options_init(&pool_options);
-    pool_options.allocator = allocator;
-    pool_options.callback_context = list;
-    pool_options.allocate_callback = (pomelo_pool_callback)
-        pomelo_list_node_init;
-
-    // element size = (header size) + (element size)
-    pool_options.element_size = sizeof(pomelo_list_node_t) + list->element_size;
-
-    list->node_pool = pomelo_pool_create(&pool_options);
-    if (!list->node_pool) {
-        pomelo_list_destroy(list);
-        return NULL;
-    }
 
     if (options->synchronized) {
         list->mutex = pomelo_mutex_create(allocator);
@@ -215,17 +262,19 @@ void pomelo_list_destroy(pomelo_list_t * list) {
     assert(list != NULL);
     pomelo_list_check_signature(list);
 
-    // Destroy all nodes
-    if (list->node_pool) {
-        pomelo_pool_destroy(list->node_pool);
-        list->node_pool = NULL;
-    }
+    // Clear the list to release all entries
+    pomelo_list_clear(list);
 
     // Destroy mutex
     if (list->mutex) {
         pomelo_mutex_destroy(list->mutex);
         list->mutex = NULL;
     }
+
+    if (list->context_owned && list->context) {
+        pomelo_list_context_destroy(list->context);
+    }
+    list->context = NULL;
 
     // Free the list itself
     pomelo_allocator_free(list->allocator, list);
@@ -237,36 +286,30 @@ int pomelo_list_resize(pomelo_list_t * list, size_t size) {
     bool success = true;
 
     pomelo_mutex_t * mutex = list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
-    }
-    /* Begin critical section */
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
 
     while (list->size < size) {
         // Need more
-        pomelo_list_node_t * node = pomelo_list_append_back(list);
-        if (!node) {
+        pomelo_list_entry_t * entry = pomelo_list_append_back(list);
+        if (!entry) {
             success = false;
             break;
         }
 
         // Zero-initialize the element
-        memset(pomelo_list_pelement(node), 0, list->element_size);
+        memset(pomelo_list_element_ptr(entry), 0, list->context->element_size);
     }
 
     while (list->size > size) {
-        pomelo_list_remove_node(list, list->back);
+        pomelo_list_remove_entry(list, list->back);
     }
 
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
-    }
+    POMELO_END_CRITICAL_SECTION(mutex);
     return success ? 0 : -1;
 }
 
 
-pomelo_list_node_t * pomelo_list_push_front_p(
+pomelo_list_entry_t * pomelo_list_push_front_p(
     pomelo_list_t * list,
     void * p_element
 ) {
@@ -275,21 +318,19 @@ pomelo_list_node_t * pomelo_list_push_front_p(
     pomelo_list_check_signature(list);
     
     pomelo_mutex_t * mutex = list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
-    }
-    /* Begin critical section */
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
 
-    pomelo_list_node_t * node = pomelo_list_append_front(list);
-    if (node) {
-        memcpy(pomelo_list_pelement(node), p_element, list->element_size);
+    pomelo_list_entry_t * entry = pomelo_list_append_front(list);
+    if (entry) {
+        memcpy(
+            pomelo_list_element_ptr(entry),
+            p_element,
+            list->context->element_size
+        );
     }
 
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
-    }
-    return node;
+    POMELO_END_CRITICAL_SECTION(mutex);
+    return entry;
 }
 
 
@@ -297,34 +338,30 @@ int pomelo_list_pop_front(pomelo_list_t * list, void * data) {
     assert(list != NULL);
     assert(data != NULL);
     pomelo_list_check_signature(list);
-    int result = 0;
     
     pomelo_mutex_t * mutex = list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
-    }
-    /* Begin critical section */
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
     
-    if (list->front) {
-        if (data) {
-            memcpy(data, pomelo_list_pelement(list->front), list->element_size);
-        }
-        pomelo_list_remove_node(list, list->front);
-    } else {
-        // No front element
-        result = -1;
-    }
-    
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
+    if (!list->front) {
+        POMELO_END_CRITICAL_SECTION(mutex);
+        return -1;
     }
 
-    return result;
+    if (data) {
+        memcpy(
+            data,
+            pomelo_list_element_ptr(list->front),
+            list->context->element_size
+        );
+    }
+    pomelo_list_remove_entry(list, list->front);
+    
+    POMELO_END_CRITICAL_SECTION(mutex);
+    return 0;
 }
 
 
-pomelo_list_node_t * pomelo_list_push_back_p(
+pomelo_list_entry_t * pomelo_list_push_back_ptr(
     pomelo_list_t * list,
     void * p_element
 ) {
@@ -333,21 +370,19 @@ pomelo_list_node_t * pomelo_list_push_back_p(
     pomelo_list_check_signature(list);
     
     pomelo_mutex_t * mutex = list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
-    }
-    /* Begin critical section */
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
 
-    pomelo_list_node_t * node = pomelo_list_append_back(list);
-    if (node) {
-        memcpy(pomelo_list_pelement(node), p_element, list->element_size);
+    pomelo_list_entry_t * entry = pomelo_list_append_back(list);
+    if (entry) {
+        memcpy(
+            pomelo_list_element_ptr(entry),
+            p_element,
+            list->context->element_size
+        );
     }
 
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
-    }
-    return node;
+    POMELO_END_CRITICAL_SECTION(mutex);
+    return entry;
 }
 
 
@@ -355,53 +390,42 @@ int pomelo_list_pop_back(pomelo_list_t * list, void * data) {
     assert(list != NULL);
     assert(data != NULL);
     pomelo_list_check_signature(list);
-    int result = 0;
     
     pomelo_mutex_t * mutex = list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
-    }
-    /* Begin critical section */
-
-    if (list->back) {
-        if (data) {
-            memcpy(data, pomelo_list_pelement(list->back), list->element_size);
-        }
-
-        pomelo_list_remove_node(list, list->back);
-    } else {
-        // No back element
-        result = -1;
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
+    
+    if (!list->back) {
+        POMELO_END_CRITICAL_SECTION(mutex);
+        return -1;
     }
 
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
+    if (data) {
+        memcpy(
+            data,
+            pomelo_list_element_ptr(list->back),
+            list->context->element_size
+        );
     }
-    return result;
+
+    pomelo_list_remove_entry(list, list->back);
+
+    POMELO_END_CRITICAL_SECTION(mutex);
+    return 0;
 }
 
 
-void pomelo_list_remove(pomelo_list_t * list, pomelo_list_node_t * node) {
+void pomelo_list_remove(pomelo_list_t * list, pomelo_list_entry_t * entry) {
     assert(list != NULL);
-    assert(node != NULL);
+    assert(entry != NULL);
     pomelo_list_check_signature(list);
+    pomelo_list_entry_check_signature(list, entry);
 
-#ifndef NDEBUG
-    assert(list->node_signature == node->signature);
-#endif
     pomelo_mutex_t * mutex = list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
-    }
-    /* Begin critical section */
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
 
-    pomelo_list_remove_node(list, node);
+    pomelo_list_remove_entry(list, entry);
 
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
-    }
+    POMELO_END_CRITICAL_SECTION(mutex);
 }
 
 
@@ -410,15 +434,12 @@ void pomelo_list_clear(pomelo_list_t * list) {
     pomelo_list_check_signature(list);
 
     pomelo_mutex_t * mutex = list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
-    }
-    /* Begin critical section */
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
 
-    pomelo_list_node_t * node = list->front;
-    while (node) {
-        pomelo_pool_release(list->node_pool, node);
-        node = node->next;
+    pomelo_list_entry_t * entry = list->front;
+    while (entry) {
+        pomelo_pool_release(list->context->entry_pool, entry);
+        entry = entry->next;
     }
 
     list->size = 0;
@@ -426,10 +447,7 @@ void pomelo_list_clear(pomelo_list_t * list) {
     list->back = NULL;
     list->mod_count++;
 
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
-    }
+    POMELO_END_CRITICAL_SECTION(mutex);
 }
 
 
@@ -437,31 +455,24 @@ bool pomelo_list_is_empty(pomelo_list_t * list) {
     assert(list != NULL);
     bool result = false;
     pomelo_mutex_t * mutex = list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
-    }
-    /* Begin critical section */
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
 
     result = (list->front == NULL);
 
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
-    }
-
+    POMELO_END_CRITICAL_SECTION(mutex);
     return result;
 }
 
 
-void pomelo_list_iterate(pomelo_list_t * list, pomelo_list_iterator_t * it) {
+void pomelo_list_iterator_init(
+    pomelo_list_iterator_t * it,
+    pomelo_list_t * list
+) {
     assert(list != NULL);
     assert(it != NULL);
 
     pomelo_mutex_t * mutex = list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
-    }
-    /* Begin critical section */
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
 
     it->list = list;
     it->current = NULL;
@@ -474,78 +485,103 @@ void pomelo_list_iterate(pomelo_list_t * list, pomelo_list_iterator_t * it) {
         it->next = list->front;
     }
 
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
-    }
+    POMELO_END_CRITICAL_SECTION(mutex);
 }
 
 
-void * pomelo_list_iterator_next(
-    pomelo_list_iterator_t * it,
-    void * p_element
-) {
+int pomelo_list_iterator_next(pomelo_list_iterator_t * it, void * p_element) {
     assert(it != NULL);
-    if (!it->next) {
-        return NULL; // No more element
-    }
-
     pomelo_mutex_t * mutex = it->list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
-    }
-    /* Begin critical section */
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
 
     assert(it->mod_count == it->list->mod_count);
     if (it->mod_count != it->list->mod_count) {
+        assert(false);
         // Mod count has changed
-        if (mutex) {
-            pomelo_mutex_unlock(mutex);
-        }
-        return NULL;
+        POMELO_END_CRITICAL_SECTION(mutex);
+        return -2;
+    }
+
+    if (!it->next) {
+        POMELO_END_CRITICAL_SECTION(mutex);
+        return -1; // No more elements
     }
 
     it->current = it->next;
     it->next = it->next->next;
 
-    void * element = pomelo_list_pelement(it->current);
+    void * element = pomelo_list_element_ptr(it->current);
     if (p_element) {
         // Clone data
-        memcpy(p_element, element, it->list->element_size);
+        memcpy(
+            p_element,
+            element,
+            it->list->context->element_size
+        );
     }
 
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
-    }
-
-    return element;
+    POMELO_END_CRITICAL_SECTION(mutex);
+    return 0;
 }
 
 
 void pomelo_list_iterator_remove(pomelo_list_iterator_t * it) {
     assert(it != NULL);
+    if (!it->current) return;
 
-    if (!it->current) {
+    pomelo_mutex_t * mutex = it->list->mutex;
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
+
+    if (it->mod_count != it->list->mod_count) {
+        assert(false);
+        // Mod count has changed
+        POMELO_END_CRITICAL_SECTION(mutex);
         return;
     }
 
-    pomelo_mutex_t * mutex = it->list->mutex;
-    if (mutex) {
-        pomelo_mutex_lock(mutex);
+    pomelo_list_entry_t * entry = it->current;
+    it->current = entry->prev;
+
+    // Remove the current entry
+    pomelo_list_remove_entry(it->list, entry);
+
+    // Synchronize mod count after removing the entry
+    it->mod_count = it->list->mod_count;
+
+    POMELO_END_CRITICAL_SECTION(mutex);
+}
+
+
+pomelo_list_entry_t * pomelo_list_iterator_transfer(
+    pomelo_list_iterator_t * it,
+    pomelo_list_t * list
+) {
+    assert(it != NULL);
+    assert(list != NULL);
+
+    pomelo_list_t * original_list = it->list;
+    assert(original_list->context == list->context);
+    if (original_list->context != list->context) {
+        return NULL; // Different context, cannot transfer
     }
-    /* Begin critical section */
 
-    pomelo_list_node_t * node = it->current;
-    it->current = node->prev;
+    pomelo_mutex_t * mutex = original_list->mutex;
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
 
-    // Remove the current node
-    pomelo_list_remove_node(it->list, node);
+    pomelo_list_entry_t * entry = it->current;
+    it->current = entry->prev;
+    pomelo_list_unlink_entry(original_list, entry);
 
-    /* End critical section */
-    if (mutex) {
-        pomelo_mutex_unlock(mutex);
-    }
+    POMELO_END_CRITICAL_SECTION(mutex);
+
+    // Add entry to the new list
+    mutex = list->mutex;
+    POMELO_BEGIN_CRITICAL_SECTION(mutex);
+
+    pomelo_list_link_back(list, entry);
+
+    POMELO_END_CRITICAL_SECTION(mutex);
+    return entry;
 }
 
 
@@ -563,38 +599,28 @@ static uint8_t * pomelo_unrolled_list_find_bucket(
     size_t i;
     size_t bucket_index = element_index / list->bucket_elements;
 
-    pomelo_list_node_t * node = NULL;
-
+    pomelo_list_entry_t * entry = NULL;
     if (bucket_index < list->size / 2) {
         // At the left half
-        node = list->nodes->front;
+        entry = list->entries->front;
         i = 0;
 
         while (++i < bucket_index) {
-            node = node->next;
-            assert(node != NULL);
+            entry = entry->next;
+            assert(entry != NULL);
         }
     } else {
         // At the right half
-        node = list->nodes->back;
+        entry = list->entries->back;
         i = list->size;
 
         while (--i > bucket_index) {
-            node = node->prev;
-            assert(node != NULL);
+            entry = entry->prev;
+            assert(entry != NULL);
         }
     }
 
-    return pomelo_list_pelement(node);
-}
-
-
-
-void pomelo_unrolled_list_options_init(
-    pomelo_unrolled_list_options_t * options
-) {
-    assert(options != NULL);
-    memset(options, 0, sizeof(pomelo_unrolled_list_options_t));
+    return pomelo_list_element_ptr(entry);
 }
 
 
@@ -602,9 +628,7 @@ pomelo_unrolled_list_t * pomelo_unrolled_list_create(
     pomelo_unrolled_list_options_t * options
 ) {
     assert(options != NULL);
-    if (options->element_size == 0) {
-        return NULL;
-    }
+    if (options->element_size == 0) return NULL;
 
     pomelo_allocator_t * allocator = options->allocator;
     if (!allocator) {
@@ -613,10 +637,7 @@ pomelo_unrolled_list_t * pomelo_unrolled_list_create(
 
     pomelo_unrolled_list_t * list =
         pomelo_allocator_malloc_t(allocator, pomelo_unrolled_list_t);
-    if (!list) {
-        // Failed to allocate new list
-        return NULL;
-    }
+    if (!list) return NULL; // Failed to allocate new list
 
     int ret = pomelo_unrolled_list_init(list, options);
     if (ret < 0) {
@@ -659,15 +680,13 @@ int pomelo_unrolled_list_init(
 
     size_t bucket_size = options->element_size * bucket_elements;
 
-    pomelo_list_options_t list_options;
-    pomelo_list_options_init(&list_options);
-    list_options.allocator = allocator;
-    list_options.element_size = bucket_size;
-
-    list->nodes = pomelo_list_create(&list_options);
-    if (!list->nodes) {
-        // Failed to create nodes list
-        return -1;
+    pomelo_list_options_t list_options = {
+        .allocator = allocator,
+        .element_size = bucket_size
+    };
+    list->entries = pomelo_list_create(&list_options);
+    if (!list->entries) {
+        return -1; // Failed to create entries list
     }
 
     return 0;
@@ -677,9 +696,9 @@ int pomelo_unrolled_list_init(
 void pomelo_unrolled_list_finalize(pomelo_unrolled_list_t * list) {
     assert(list != NULL);
 
-    if (list->nodes) {
-        pomelo_list_destroy(list->nodes);
-        list->nodes = NULL;
+    if (list->entries) {
+        pomelo_list_destroy(list->entries);
+        list->entries = NULL;
     }
 }
 
@@ -689,7 +708,7 @@ int pomelo_unrolled_list_resize(pomelo_unrolled_list_t * list, size_t size) {
     
     // The number of bucket
     size_t bucket_size = POMELO_CEIL_DIV(size, list->bucket_elements);
-    int ret = pomelo_list_resize(list->nodes, bucket_size);
+    int ret = pomelo_list_resize(list->entries, bucket_size);
     if (ret < 0) {
         return -1;
     }
@@ -702,7 +721,7 @@ int pomelo_unrolled_list_resize(pomelo_unrolled_list_t * list, size_t size) {
 void pomelo_unrolled_list_clear(pomelo_unrolled_list_t * list) {
     assert(list != NULL);
 
-    pomelo_list_clear(list->nodes);
+    pomelo_list_clear(list->entries);
     list->size = 0;
 }
 
@@ -739,7 +758,7 @@ int pomelo_unrolled_list_get_back(
         return -1;
     }
 
-    uint8_t * bucket = pomelo_list_pelement(list->nodes->back);
+    uint8_t * bucket = pomelo_list_element_ptr(list->entries->back);
     size_t offset_index = ((list->size - 1) % list->bucket_elements);
     size_t offset = offset_index * list->element_size;
     memcpy(p_element, bucket + offset, list->element_size);
@@ -759,14 +778,14 @@ int pomelo_unrolled_list_get_front(
         return -1;
     }
 
-    uint8_t * bucket = pomelo_list_pelement(list->nodes->front);
+    uint8_t * bucket = pomelo_list_element_ptr(list->entries->front);
     memcpy(p_element, bucket, list->element_size);
 
     return 0;
 }
 
 
-int pomelo_unrolled_list_set_p(
+void * pomelo_unrolled_list_set_ptr(
     pomelo_unrolled_list_t * list,
     size_t index,
     void * p_element
@@ -774,19 +793,18 @@ int pomelo_unrolled_list_set_p(
     assert(list != NULL);
     assert(p_element != NULL);
 
-    if (index >= list->size) {
-        return -1;
-    }
+    if (index >= list->size) return NULL;
 
     uint8_t * bucket = pomelo_unrolled_list_find_bucket(list, index);
     size_t offset = (index % list->bucket_elements) * list->element_size;
-    memcpy(bucket + offset, p_element, list->element_size);
+    void * element = bucket + offset;
+    memcpy(element, p_element, list->element_size);
 
-    return 0;
+    return element;
 }
 
 
-int pomelo_unrolled_list_push_back_p(
+void * pomelo_unrolled_list_push_back_ptr(
     pomelo_unrolled_list_t * list,
     void * p_element
 ) {
@@ -796,19 +814,18 @@ int pomelo_unrolled_list_push_back_p(
     size_t new_size = list->size + 1;
     size_t new_bucket_size = POMELO_CEIL_DIV(new_size, list->bucket_elements);
     
-    if (new_bucket_size != list->nodes->size) {
-        int ret = pomelo_list_resize(list->nodes, new_bucket_size);
-        if (ret < 0) {
-            return -1;
-        }
+    if (new_bucket_size != list->entries->size) {
+        int ret = pomelo_list_resize(list->entries, new_bucket_size);
+        if (ret < 0) return NULL;
     }
 
-    uint8_t * bucket = pomelo_list_pelement(list->nodes->back);
+    uint8_t * bucket = pomelo_list_element_ptr(list->entries->back);
     size_t offset = (list->size % list->bucket_elements) * list->element_size;
-    memcpy(bucket + offset, p_element, list->element_size);
+    void * element = bucket + offset;
+    memcpy(element, p_element, list->element_size);
 
     list->size++;
-    return 0;
+    return element;
 }
 
 
@@ -824,7 +841,7 @@ int pomelo_unrolled_list_pop_back(
     }
 
     if (p_element) {
-        uint8_t * bucket = pomelo_list_pelement(list->nodes->back);
+        uint8_t * bucket = pomelo_list_element_ptr(list->entries->back);
         size_t offset_index = ((list->size - 1) % list->bucket_elements);
         size_t offset = offset_index * list->element_size;
         memcpy(p_element, bucket + offset, list->element_size);
@@ -832,8 +849,8 @@ int pomelo_unrolled_list_pop_back(
 
     size_t new_size = list->size - 1;
     size_t new_bucket_size = POMELO_CEIL_DIV(new_size, list->bucket_elements);
-    if (new_bucket_size != list->nodes->size) {
-        int ret = pomelo_list_resize(list->nodes, new_bucket_size);
+    if (new_bucket_size != list->entries->size) {
+        int ret = pomelo_list_resize(list->entries, new_bucket_size);
         if (ret < 0) {
             return -1;
         }
@@ -854,14 +871,14 @@ void pomelo_unrolled_list_begin(
     it->list = list;
 
     if (list->size == 0) {
-        it->node = NULL;
+        it->entry = NULL;
         it->bucket = NULL;
         it->index = 0;
         return;
     }
 
-    it->node = list->nodes->front;
-    it->bucket = pomelo_list_pelement(it->node);
+    it->entry = list->entries->front;
+    it->bucket = pomelo_list_element_ptr(it->entry);
     it->index = 0;
 }
 
@@ -876,26 +893,25 @@ void pomelo_unrolled_list_end(
     it->list = list;
 
     if (list->size == 0) {
-        it->node = NULL;
+        it->entry = NULL;
         it->bucket = NULL;
         it->index = 0;
         return;
     }
 
-    it->node = list->nodes->back;
-    it->bucket = pomelo_list_pelement(it->node);
+    it->entry = list->entries->back;
+    it->bucket = pomelo_list_element_ptr(it->entry);
     it->index = list->size - 1;
 }
 
 
-void * pomelo_unrolled_list_iterator_next(
+int pomelo_unrolled_list_iterator_next(
     pomelo_unrolled_list_iterator_t * it,
     void * output
 ) {
     assert(it != NULL);
     if (it->index >= it->list->size) {
-        // End of iteration
-        return NULL;
+        return -1; // End of iteration
     }
 
 
@@ -909,22 +925,22 @@ void * pomelo_unrolled_list_iterator_next(
 
     if (bucket_index == list->bucket_elements - 1) {
         // Next bucket
-        it->node = it->node->next;
-        it->bucket = it->node ? pomelo_list_pelement(it->node) : NULL;
+        it->entry = it->entry->next;
+        it->bucket = it->entry ? pomelo_list_element_ptr(it->entry) : NULL;
     }
 
     ++it->index;
-    return element;
+    return 0;
 }
 
 
-void * pomelo_unrolled_list_iterator_prev(
+int pomelo_unrolled_list_iterator_prev(
     pomelo_unrolled_list_iterator_t * it,
     void * output
 ) {
     assert(it != NULL);
     if (it->index >= it->list->size) {
-        return NULL;
+        return -1; // End of iteration
     }
 
     pomelo_unrolled_list_t * list = it->list;
@@ -936,10 +952,10 @@ void * pomelo_unrolled_list_iterator_prev(
 
     if (bucket_index == 0) {
         // Previous bucket
-        it->node = it->node->prev;
-        it->bucket = it->node ? pomelo_list_pelement(it->node) : NULL;
+        it->entry = it->entry->prev;
+        it->bucket = it->entry ? pomelo_list_element_ptr(it->entry) : NULL;
     }
 
     --it->index;
-    return element;
+    return 0;
 }

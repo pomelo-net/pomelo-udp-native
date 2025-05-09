@@ -11,12 +11,18 @@ extern "C" {
 /*                               Exported APIs                                */
 /* -------------------------------------------------------------------------- */
 
+/// @brief Acquire a message
+pomelo_message_t * POMELO_PLUGIN_CALL pomelo_plugin_message_acquire(
+    pomelo_plugin_t * plugin
+);
+
+
 /// @brief Write data to message
 int POMELO_PLUGIN_CALL pomelo_plugin_message_write(
     pomelo_plugin_t * plugin,
     pomelo_message_t * message,
-    size_t length,
-    const uint8_t * buffer
+    const uint8_t * buffer,
+    size_t length
 );
 
 
@@ -24,8 +30,8 @@ int POMELO_PLUGIN_CALL pomelo_plugin_message_write(
 int POMELO_PLUGIN_CALL pomelo_plugin_message_read(
     pomelo_plugin_t * plugin,
     pomelo_message_t * message,
-    size_t length,
-    uint8_t * buffer
+    uint8_t * buffer,
+    size_t length
 );
 
 

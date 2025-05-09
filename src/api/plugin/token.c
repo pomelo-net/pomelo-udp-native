@@ -2,8 +2,8 @@
 #include <string.h>
 #include "pomelo/errno.h"
 #include "pomelo/token.h"
+#include "base/constants.h"
 #include "api/socket.h"
-#include "codec/packet.h"
 #include "token.h"
 
 
@@ -21,6 +21,9 @@ int POMELO_PLUGIN_CALL pomelo_plugin_token_connect_token_decode(
     if (!plugin || !socket || !connect_token || !token_info) {
         return POMELO_ERR_PLUGIN_INVALID_ARG;
     }
+
+    pomelo_plugin_impl_t * impl = (pomelo_plugin_impl_t *) plugin;
+    pomelo_plugin_check_signature(impl);
 
     pomelo_connect_token_t token;
     memset(&token, 0, sizeof(pomelo_connect_token_t));

@@ -2,64 +2,63 @@
 #include <string.h>
 #include "context.h"
 #include "message.h"
+#include "socket.h"
+#include "base/allocator.h"
+#include "base/constants.h"
 #include "base/ref.h"
 #include "delivery/parcel.h"
 #include "delivery/context.h"
 #include "plugin/manager.h"
 #include "utils/macro.h"
-#include "codec/codec.h"
+#include "crypto/crypto.h"
+#include "builtin/session.h"
+#include "builtin/channel.h"
+#include "plugin/session.h"
+#include "plugin/channel.h"
 
 
 /// The capacity of fragment body
 #define POMELO_FRAGMENT_BODY_CAPACITY                                          \
-    (POMELO_PACKET_PAYLOAD_BODY_CAPACITY_DEFAULT - POMELO_MAX_FRAGMENT_META_DATA_BYTES)
+    (POMELO_PACKET_BODY_CAPACITY - POMELO_MAX_FRAGMENT_META_DATA_BYTES)
+
 
 /* -------------------------------------------------------------------------- */
 /*                             Root context APIs                              */
 /* -------------------------------------------------------------------------- */
 
 
-void pomelo_context_root_options_init(pomelo_context_root_options_t * options) {
-    assert(options != NULL);
-    memset(options, 0, sizeof(pomelo_context_root_options_t));
-    options->message_capacity = POMELO_MESSAGE_DEFAULT_CAPACITY;
-}
-
-
 pomelo_context_t * pomelo_context_root_create(
     pomelo_context_root_options_t * options
 ) {
     assert(options != NULL);
-    if (pomelo_codec_init() < 0) {
+    if (pomelo_crypto_init() < 0) {
         return NULL; // Failed to initialize codec
     }
 
     pomelo_allocator_t * allocator = options->allocator;
-
     if (!allocator) {
         allocator = pomelo_allocator_default();
     }
 
-    if (options->message_capacity == 0) {
-        // Invalid message capacity
-        return NULL;
+    size_t message_capacity = options->message_capacity;
+    if (message_capacity == 0) {
+        message_capacity = POMELO_MESSAGE_DEFAULT_CAPACITY;
     }
 
     pomelo_context_root_t * context =
         pomelo_allocator_malloc_t(allocator, pomelo_context_root_t);
-    if (!context) {
-        return NULL;
-    }
+    if (!context) return NULL;
     memset(context, 0, sizeof(pomelo_context_root_t));
+    pomelo_context_t * base = &context->base;
 
     context->allocator = allocator;
 
     // Create buffer context
-    pomelo_buffer_context_root_options_t buffer_context_options;
-    pomelo_buffer_context_root_options_init(&buffer_context_options);
-    buffer_context_options.allocator = allocator;
-    buffer_context_options.buffer_capacity = POMELO_PACKET_BUFFER_CAPACITY_DEFAULT;
-
+    pomelo_buffer_context_root_options_t buffer_context_options = {
+        .allocator = allocator,
+        .buffer_capacity = POMELO_BUFFER_CAPACITY,
+        .synchronized = options->synchronized
+    };
     context->buffer_context =
         pomelo_buffer_context_root_create(&buffer_context_options);
     if (!context->buffer_context) {
@@ -68,17 +67,16 @@ pomelo_context_t * pomelo_context_root_create(
     }
 
     // Create delivery context
-    pomelo_delivery_context_root_options_t delivery_context_options;
-    pomelo_delivery_context_root_options_init(&delivery_context_options);
-    delivery_context_options.allocator = allocator;
-    delivery_context_options.buffer_context = context->buffer_context;
-    delivery_context_options.fragment_capacity =
-        POMELO_PACKET_PAYLOAD_BODY_CAPACITY_DEFAULT;
-    delivery_context_options.max_fragments = POMELO_CEIL_DIV(
-        options->message_capacity,
-        POMELO_FRAGMENT_BODY_CAPACITY
-    );
-
+    pomelo_delivery_context_root_options_t delivery_context_options = {
+        .allocator = allocator,
+        .buffer_context = context->buffer_context,
+        .fragment_capacity = POMELO_PACKET_BODY_CAPACITY,
+        .max_fragments = POMELO_CEIL_DIV(
+            message_capacity,
+            POMELO_FRAGMENT_BODY_CAPACITY
+        ),
+        .synchronized = options->synchronized
+    };
     context->delivery_context =
         pomelo_delivery_context_root_create(&delivery_context_options);
     if (!context->delivery_context) {
@@ -87,42 +85,38 @@ pomelo_context_t * pomelo_context_root_create(
     }
 
     // Create protocol context
-    pomelo_protocol_context_root_options_t protocol_context_options;
-    pomelo_protocol_context_root_options_init(&protocol_context_options);
-    protocol_context_options.allocator = allocator;
-    protocol_context_options.buffer_context = context->buffer_context;
-    protocol_context_options.packet_capacity = POMELO_PACKET_BUFFER_CAPACITY_DEFAULT;
-
-    context->protocol_context =
-        pomelo_protocol_context_root_create(&protocol_context_options);
-    if (!context->protocol_context) {
+    pomelo_protocol_context_options_t protocol_context_options = {
+        .allocator = allocator,
+        .buffer_context = context->buffer_context,
+        .payload_capacity = POMELO_PACKET_BODY_CAPACITY
+    };
+    base->protocol_context =
+        pomelo_protocol_context_create(&protocol_context_options);
+    if (!base->protocol_context) {
         pomelo_context_root_destroy(context);
         return NULL;
     }
 
     // Create message pool
-    pomelo_pool_options_t pool_options;
-    pomelo_pool_options_init(&pool_options);
-
+    pomelo_pool_root_options_t pool_options;
+    memset(&pool_options, 0, sizeof(pomelo_pool_root_options_t));
     pool_options.allocator = allocator;
     pool_options.element_size = sizeof(pomelo_message_t);
-    pool_options.zero_initialized = true;
+    pool_options.zero_init = true;
+    pool_options.on_init = (pomelo_pool_init_cb) pomelo_message_init;
+    pool_options.on_cleanup = (pomelo_pool_cleanup_cb) pomelo_message_cleanup;
+    pool_options.synchronized = options->synchronized;
 
-#ifdef POMELO_MULTI_THREAD
-    pool_options.synchronized = true;
-#endif // !POMELO_MULTI_THREAD
-
-    context->message_pool = pomelo_pool_create(&pool_options);
+    context->message_pool = pomelo_pool_root_create(&pool_options);
     if (!context->message_pool) {
         pomelo_context_root_destroy(context);
         return NULL;
     }
 
     // Setup the plugin manager
-    pomelo_plugin_manager_options_t plugin_manager_options;
-    pomelo_plugin_manager_options_init(&plugin_manager_options);
-    plugin_manager_options.allocator = allocator;
-
+    pomelo_plugin_manager_options_t plugin_manager_options = {
+        .allocator = allocator
+    };
     pomelo_plugin_manager_t * plugin_manager =
         pomelo_plugin_manager_create(&plugin_manager_options);
     if (!plugin_manager) {
@@ -131,26 +125,104 @@ pomelo_context_t * pomelo_context_root_create(
     }
     context->plugin_manager = plugin_manager;
 
+    // Create socket pool
+    memset(&pool_options, 0, sizeof(pomelo_pool_root_options_t));
+    pool_options.allocator = allocator;
+    pool_options.element_size = sizeof(pomelo_socket_t);
+    pool_options.on_alloc = (pomelo_pool_alloc_cb) pomelo_socket_on_alloc;
+    pool_options.on_free = (pomelo_pool_free_cb) pomelo_socket_on_free;
+    pool_options.on_init = (pomelo_pool_init_cb) pomelo_socket_init;
+    pool_options.on_cleanup = (pomelo_pool_cleanup_cb) pomelo_socket_cleanup;
+    pool_options.alloc_data = context;
+    base->socket_pool = pomelo_pool_root_create(&pool_options);
+    if (!base->socket_pool) {
+        pomelo_context_root_destroy(context);
+        return NULL;
+    }
+
+    // Create builtin session pool
+    memset(&pool_options, 0, sizeof(pomelo_pool_root_options_t));
+    pool_options.allocator = allocator;
+    pool_options.element_size = sizeof(pomelo_session_builtin_t);
+    pool_options.on_alloc = (pomelo_pool_alloc_cb)
+        pomelo_session_builtin_on_alloc;
+    pool_options.on_free = (pomelo_pool_free_cb)
+        pomelo_session_builtin_on_free;
+    pool_options.on_init = (pomelo_pool_init_cb) pomelo_session_builtin_init;
+    pool_options.on_cleanup = (pomelo_pool_cleanup_cb)
+        pomelo_session_builtin_cleanup;
+    pool_options.alloc_data = context;
+
+    base->builtin_session_pool = pomelo_pool_root_create(&pool_options);
+    if (!base->builtin_session_pool) {
+        pomelo_context_root_destroy(context);
+        return NULL;
+    }
+
+    // Create builtin channel pool
+    memset(&pool_options, 0, sizeof(pomelo_pool_root_options_t));
+    pool_options.allocator = allocator;
+    pool_options.element_size = sizeof(pomelo_channel_builtin_t);
+    pool_options.alloc_data = context;
+    pool_options.zero_init = true;
+    pool_options.on_init = (pomelo_pool_init_cb) pomelo_channel_builtin_init;
+    pool_options.on_cleanup = (pomelo_pool_cleanup_cb)
+        pomelo_channel_builtin_cleanup;
+    base->builtin_channel_pool = pomelo_pool_root_create(&pool_options);
+    if (!base->builtin_channel_pool) {
+        pomelo_context_root_destroy(context);
+        return NULL;
+    }
+
+    // Create plugin session pool
+    memset(&pool_options, 0, sizeof(pomelo_pool_root_options_t));
+    pool_options.allocator = allocator;
+    pool_options.element_size = sizeof(pomelo_session_plugin_t);
+    pool_options.alloc_data = context;
+    pool_options.on_alloc = (pomelo_pool_alloc_cb)
+        pomelo_session_plugin_on_alloc;
+    pool_options.on_free = (pomelo_pool_free_cb)
+        pomelo_session_plugin_on_free;
+    pool_options.on_init = (pomelo_pool_init_cb) pomelo_session_plugin_init;
+    pool_options.on_cleanup = (pomelo_pool_cleanup_cb)
+        pomelo_session_plugin_cleanup;
+    base->plugin_session_pool = pomelo_pool_root_create(&pool_options);
+    if (!base->plugin_session_pool) {
+        pomelo_context_root_destroy(context);
+        return NULL;
+    }
+    
+    // Create plugin channel pool
+    memset(&pool_options, 0, sizeof(pomelo_pool_root_options_t));
+    pool_options.allocator = allocator;
+    pool_options.element_size = sizeof(pomelo_channel_plugin_t);
+    pool_options.alloc_data = context;
+    pool_options.zero_init = true;
+    pool_options.on_init = (pomelo_pool_init_cb) pomelo_channel_plugin_init;
+    pool_options.on_cleanup = (pomelo_pool_cleanup_cb)
+        pomelo_channel_plugin_cleanup;
+    base->plugin_channel_pool = pomelo_pool_root_create(&pool_options);
+    if (!base->plugin_channel_pool) {
+        pomelo_context_root_destroy(context);
+        return NULL;
+    }
+
     // Setup the interface
-    pomelo_context_t * base = &context->base;
-#ifdef POMELO_MULTI_THREAD
     base->root = context; // Root is itself
-#endif
     pomelo_extra_set(base->extra, NULL);
+    base->allocator = allocator;
     base->acquire_message = (pomelo_context_acquire_message_fn)
-        pomelo_context_acquire_message;
+        pomelo_context_root_acquire_message;
     base->release_message = (pomelo_context_release_message_fn)
-        pomelo_context_release_message;
+        pomelo_context_root_release_message;
     base->statistic = (pomelo_context_statistic_fn)
-        pomelo_context_statistic;
+        pomelo_context_root_statistic;
     base->buffer_context = (pomelo_buffer_context_t *)
         context->buffer_context;
-    base->protocol_context = (pomelo_protocol_context_t *)
-        context->protocol_context;
     base->delivery_context = (pomelo_delivery_context_t *)
         context->delivery_context;
     base->plugin_manager = plugin_manager;
-    base->message_capacity = options->message_capacity;
+    base->message_capacity = message_capacity;
 
     return base;
 }
@@ -158,24 +230,30 @@ pomelo_context_t * pomelo_context_root_create(
 
 void pomelo_context_root_destroy(pomelo_context_root_t * context) {
     assert(context != NULL);
+    pomelo_context_t * base = &context->base;
+
+    if (base->socket_pool) {
+        pomelo_pool_destroy(base->socket_pool);
+        base->socket_pool = NULL;
+    }
 
     if (context->message_pool) {
         pomelo_pool_destroy(context->message_pool);
         context->message_pool = NULL;
     }
 
-    if (context->protocol_context) {
-        pomelo_protocol_context_root_destroy(context->protocol_context);
-        context->protocol_context = NULL;
+    if (base->protocol_context) {
+        pomelo_protocol_context_destroy(base->protocol_context);
+        base->protocol_context = NULL;
     }
 
     if (context->delivery_context) {
-        pomelo_delivery_context_root_destroy(context->delivery_context);
+        pomelo_delivery_context_destroy(context->delivery_context);
         context->delivery_context = NULL;
     }
 
     if (context->buffer_context) {
-        pomelo_buffer_context_root_destroy(context->buffer_context);
+        pomelo_buffer_context_destroy(context->buffer_context);
         context->buffer_context = NULL;
     }
 
@@ -184,57 +262,50 @@ void pomelo_context_root_destroy(pomelo_context_root_t * context) {
         context->plugin_manager = NULL;
     }
 
+    if (base->builtin_session_pool) {
+        pomelo_pool_destroy(base->builtin_session_pool);
+        base->builtin_session_pool = NULL;
+    }
+
+    if (base->builtin_channel_pool) {
+        pomelo_pool_destroy(base->builtin_channel_pool);
+        base->builtin_channel_pool = NULL;
+    }
+
+    if (base->plugin_session_pool) {
+        pomelo_pool_destroy(base->plugin_session_pool);
+        base->plugin_session_pool = NULL;
+    }
+
+    if (base->plugin_channel_pool) {
+        pomelo_pool_destroy(base->plugin_channel_pool);
+        base->plugin_channel_pool = NULL;
+    }
+
     pomelo_allocator_free(context->allocator, context);
 }
 
 
-pomelo_message_t * pomelo_context_acquire_message(pomelo_context_root_t * context) {
+pomelo_message_t * pomelo_context_root_acquire_message(
+    pomelo_context_root_t * context,
+    pomelo_message_info_t * info
+) {
     assert(context != NULL);
-
-    pomelo_message_t * message = pomelo_pool_acquire(context->message_pool);
-    if (!message) {
-        // Failed to allocate message
-        return NULL;
-    }
-
-    // Set the message context, initialize reference
-    message->context = (pomelo_context_t *) context;
-    pomelo_reference_init(&message->ref, pomelo_message_reference_finalize);
-    return message;
+    return pomelo_pool_acquire(context->message_pool, info);
 }
 
 
-void pomelo_context_release_message(
+void pomelo_context_root_release_message(
     pomelo_context_root_t * context,
     pomelo_message_t * message
 ) {
     assert(context != NULL);
-    assert(message != NULL);
-
-    // Check the context
-    if (((pomelo_context_t *) context) != message->context) {
-        // Update the context of message first
-        pomelo_message_set_context(
-            message,
-            (pomelo_context_t *) context
-        );
-    }
-
-    pomelo_delivery_context_t * delivery_context =
-        (pomelo_delivery_context_t *) context->delivery_context;
-
-    if (message->parcel) {
-        // Release the delivery message
-        delivery_context->release_parcel(delivery_context, message->parcel);
-        message->parcel = NULL;
-    }
-
-    // Reset the ref counter and release the message
+    assert(message->context == &context->base);
     pomelo_pool_release(context->message_pool, message);
 }
 
 
-void pomelo_context_statistic(
+void pomelo_context_root_statistic(
     pomelo_context_root_t * context,
     pomelo_statistic_api_t * statistic
 ) {
@@ -242,22 +313,26 @@ void pomelo_context_statistic(
     assert(statistic != NULL);
 
     statistic->messages = pomelo_pool_in_use(context->message_pool);
+
+    pomelo_context_t * base = &context->base;
+    statistic->builtin_sessions = pomelo_pool_in_use(
+        base->builtin_session_pool
+    );
+    statistic->plugin_sessions = pomelo_pool_in_use(
+        base->plugin_session_pool
+    );
+    statistic->builtin_channels = pomelo_pool_in_use(
+        base->builtin_channel_pool
+    );
+    statistic->plugin_channels = pomelo_pool_in_use(
+        base->plugin_channel_pool
+    );
 }
 
 
 /* -------------------------------------------------------------------------- */
 /*                            Shared context APIs                             */
 /* -------------------------------------------------------------------------- */
-
-#ifdef POMELO_MULTI_THREAD
-
-void pomelo_context_shared_options_init(
-    pomelo_context_shared_options_t * options
-) {
-    assert(options != NULL);
-    memset(options, 0, sizeof(pomelo_context_shared_options_t));
-}
-
 
 pomelo_context_t * pomelo_context_shared_create(
     pomelo_context_shared_options_t * options
@@ -274,26 +349,17 @@ pomelo_context_t * pomelo_context_shared_create(
 
     pomelo_context_shared_t * context =
         pomelo_allocator_malloc_t(allocator, pomelo_context_shared_t);
-    if (!context) {
-        // Failed to allocate new context
-        return NULL;
-    }
+    if (!context) return NULL;
 
     pomelo_context_root_t * root = options->context->root;
-    if (!root) {
-        // Provided context is root
-        root = (pomelo_context_root_t *) options->context;
-    }
-
     memset(context, 0, sizeof(pomelo_context_shared_t));
     context->allocator = allocator;
 
     // Create buffer context
-    pomelo_buffer_context_shared_options_t buffer_context_options;
-    pomelo_buffer_context_shared_options_init(&buffer_context_options);
-    buffer_context_options.allocator = allocator;
-    buffer_context_options.context = root->buffer_context;
-    
+    pomelo_buffer_context_shared_options_t buffer_context_options = {
+        .allocator = allocator,
+        .context = root->buffer_context
+    };
     context->buffer_context =
         pomelo_buffer_context_shared_create(&buffer_context_options);
     if (!context->buffer_context) {
@@ -302,30 +368,11 @@ pomelo_context_t * pomelo_context_shared_create(
         return NULL;
     }
 
-    // Create protocol context
-    pomelo_protocol_context_shared_options_t protocol_context_options;
-    pomelo_protocol_context_shared_options_init(
-        &protocol_context_options
-    );
-    protocol_context_options.allocator = allocator;
-    protocol_context_options.context = root->protocol_context;
-    
-    context->protocol_context =
-        pomelo_protocol_context_shared_create(&protocol_context_options);
-    if (!context->protocol_context) {
-        // Failed to create new buffer context
-        pomelo_context_shared_destroy(context);
-        return NULL;
-    }
-
     // Create local-thread delivery context
-    pomelo_delivery_context_shared_options_t delivery_context_options;
-    pomelo_delivery_context_shared_options_init(
-        &delivery_context_options
-    );
-    delivery_context_options.allocator = allocator;
-    delivery_context_options.context = root->delivery_context;
-    
+    pomelo_delivery_context_shared_options_t delivery_context_options = {
+        .allocator = allocator,
+        .origin_context = root->delivery_context
+    };
     context->delivery_context = pomelo_delivery_context_shared_create(
         &delivery_context_options
     );
@@ -336,14 +383,12 @@ pomelo_context_t * pomelo_context_shared_create(
     }
 
     // Create shared messages pool
-    pomelo_shared_pool_options_t pool_options;
-    pomelo_shared_pool_options_init(&pool_options);
-    pool_options.allocator = allocator;
-    pool_options.buffers =
-        POMELO_API_MESSAGES_POOL_BUFFER_SHARED_BUFFER_SIZE;
-    pool_options.master_pool = root->message_pool;
-    
-    context->message_pool = pomelo_shared_pool_create(&pool_options);
+    pomelo_pool_shared_options_t pool_options = {
+        .allocator = allocator,
+        .buffers = POMELO_API_MESSAGES_POOL_BUFFER_SHARED_BUFFER_SIZE,
+        .origin_pool = root->message_pool
+    };
+    context->message_pool = pomelo_pool_shared_create(&pool_options);
     if (!context->message_pool) {
         // Failed to create message pool
         pomelo_context_shared_destroy(context);
@@ -353,6 +398,7 @@ pomelo_context_t * pomelo_context_shared_create(
     // Setup the interface
     pomelo_context_t * base = &context->base;
     base->root = root;
+    base->allocator = allocator;
     pomelo_extra_set(base->extra, NULL);
     base->acquire_message = (pomelo_context_acquire_message_fn)
         pomelo_context_shared_acquire_message;
@@ -363,10 +409,16 @@ pomelo_context_t * pomelo_context_shared_create(
     base->buffer_context = (pomelo_buffer_context_t *)
         context->buffer_context;
     base->protocol_context = (pomelo_protocol_context_t *)
-        context->protocol_context;
+        context->base.protocol_context;
     base->delivery_context = (pomelo_delivery_context_t *)
         context->delivery_context;
     base->plugin_manager = root->plugin_manager;
+    base->message_capacity = root->base.message_capacity;
+    base->socket_pool = root->base.socket_pool;
+    base->builtin_session_pool = root->base.builtin_session_pool;
+    base->builtin_channel_pool = root->base.builtin_channel_pool;
+    base->plugin_session_pool = root->base.plugin_session_pool;
+    base->plugin_channel_pool = root->base.plugin_channel_pool;
 
     return base;
 }
@@ -376,24 +428,17 @@ void pomelo_context_shared_destroy(pomelo_context_shared_t * context) {
     assert(context != NULL);
 
     if (context->delivery_context) {
-        pomelo_delivery_context_shared_destroy(
-            context->delivery_context
-        );
+        pomelo_delivery_context_destroy(context->delivery_context);
         context->delivery_context = NULL;
     }
 
-    if (context->protocol_context) {
-        pomelo_protocol_context_shared_destroy(context->protocol_context);
-        context->protocol_context = NULL;
-    }
-
     if (context->message_pool) {
-        pomelo_shared_pool_destroy(context->message_pool);
+        pomelo_pool_destroy(context->message_pool);
         context->message_pool = NULL;
     }
 
     if (context->buffer_context) {
-        pomelo_buffer_context_shared_destroy(context->buffer_context);
+        pomelo_buffer_context_destroy(context->buffer_context);
         context->buffer_context = NULL;
     }
 
@@ -402,22 +447,11 @@ void pomelo_context_shared_destroy(pomelo_context_shared_t * context) {
 
 
 pomelo_message_t * pomelo_context_shared_acquire_message(
-    pomelo_context_shared_t * context
+    pomelo_context_shared_t * context,
+    pomelo_message_info_t * info
 ) {
     assert(context != NULL);
-
-    pomelo_message_t * message =
-        pomelo_shared_pool_acquire(context->message_pool);
-    if (!message) {
-        // Failed to allocate message
-        return NULL;
-    }
-
-    message->context = (pomelo_context_t *) context;
-
-    // Set the ref counter as 1
-    pomelo_reference_init(&message->ref, pomelo_message_reference_finalize);
-    return message;
+    return pomelo_pool_acquire(context->message_pool, info);
 }
 
 
@@ -426,24 +460,8 @@ void pomelo_context_shared_release_message(
     pomelo_message_t * message
 ) {
     assert(context != NULL);
-    assert(message != NULL);
-
-    // Check the context
-    if (&context->base != message->context) {
-        // Update the context of message first
-        pomelo_message_set_context(message, &context->base);
-    }
-
-    pomelo_delivery_context_t * delivery_context =
-        &context->delivery_context->base;
-    if (message->parcel) {
-        // Release the delivery message
-        delivery_context->release_parcel(delivery_context, message->parcel);
-        message->parcel = NULL;
-    }
-
-    // Reset the ref counter and release the message
-    pomelo_shared_pool_release(context->message_pool, message);
+    assert(message->context == &context->base);
+    pomelo_pool_release(context->message_pool, message);
 }
 
 
@@ -452,23 +470,17 @@ void pomelo_context_shared_statistic(
     pomelo_statistic_api_t * statistic
 ) {
     assert(context != NULL);
-    pomelo_context_statistic(context->base.root, statistic);
+    pomelo_context_root_statistic(context->base.root, statistic);
 }
-
-#endif // !POMELO_MULTI_THREAD
 
 
 void pomelo_context_destroy(pomelo_context_t * context) {
     assert(context != NULL);
-#ifdef POMELO_MULTI_THREAD
     if ((pomelo_context_t *) context->root == context) {
         pomelo_context_root_destroy((pomelo_context_root_t *) context);
     } else {
         pomelo_context_shared_destroy((pomelo_context_shared_t *) context);
     }
-#else // !POMELO_MULTI_THREAD
-    pomelo_context_root_destroy((pomelo_context_root_t *) context);
-#endif // POMELO_MULTI_THREAD
 }
 
 
@@ -481,4 +493,78 @@ void pomelo_context_set_extra(pomelo_context_t * context, void * data) {
 void * pomelo_context_get_extra(pomelo_context_t * context) {
     assert(context != NULL);
     return pomelo_extra_get(context->extra);
+}
+
+
+pomelo_message_t * pomelo_context_acquire_message(pomelo_context_t * context) {
+    assert(context != NULL);
+    pomelo_delivery_parcel_t * parcel =
+        pomelo_delivery_context_acquire_parcel(context->delivery_context);
+    if (!parcel) return NULL; // Failed to acquire parcel
+
+    // Acquire new message and attach the parcel to message
+    pomelo_message_info_t info = {
+        .context = context,
+        .mode = POMELO_MESSAGE_MODE_WRITE,
+        .parcel = parcel
+    };
+    pomelo_message_t * message =
+        pomelo_context_acquire_message_ex(context, &info);
+    
+    // Unref the parcel
+    pomelo_delivery_parcel_unref(parcel);
+    return message;
+}
+
+
+pomelo_message_t * pomelo_context_acquire_message_ex(
+    pomelo_context_t * context,
+    pomelo_message_info_t * info
+) {
+    assert(context != NULL);
+    return context->acquire_message(context, info);
+}
+
+
+void pomelo_context_release_message(
+    pomelo_context_t * context,
+    pomelo_message_t * message
+) {
+    assert(context != NULL);
+    assert(message->context == context);
+    context->release_message(context, message);
+}
+
+
+void pomelo_context_statistic(
+    pomelo_context_t * context,
+    pomelo_statistic_t * statistic
+) {
+    assert(statistic != NULL);
+    assert(context != NULL);
+    memset(statistic, 0, sizeof(pomelo_statistic_t));
+
+    // API statistic
+    context->statistic(context, &statistic->api);
+
+    // Allocator statistic
+    pomelo_allocator_statistic(context->allocator, &statistic->allocator);
+
+    // Buffer context statistic
+    pomelo_buffer_context_statistic(
+        context->buffer_context,
+        &statistic->buffer
+    );
+
+    // Statistic of protocol
+    pomelo_protocol_context_statistic(
+        context->protocol_context,
+        &statistic->protocol
+    );
+
+    // Statistic of delivery
+    pomelo_delivery_context_statistic(
+        context->delivery_context,
+        &statistic->delivery
+    );
 }

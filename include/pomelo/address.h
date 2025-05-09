@@ -53,12 +53,34 @@ typedef struct pomelo_address_s pomelo_address_t;
 /// @return 0 on success, or an error code < 0 on failure.
 int pomelo_address_from_string(pomelo_address_t * address, const char * str);
 
+/// @brief Convert string to address
+/// @param address The output address
+/// @param ip The input ip
+/// @param port The input port
+/// @return 0 on success, or an error code < 0 on failure.
+int pomelo_address_from_string_ex(
+    pomelo_address_t * address,
+    const char * ip,
+    uint16_t port
+);
+
 
 /// @brief Convert address to string
 /// @param address Input address
 /// @param str Output string
-/// @param len Output string capacity buffer (Include zero)
+/// @param capacity Output string capacity buffer (include NULL terminator)
 int pomelo_address_to_string(
+    pomelo_address_t * address,
+    char * str,
+    size_t capacity
+);
+
+
+/// @brief Convert address to IP string
+/// @param address Input address
+/// @param str Output string
+/// @param capacity Output string capacity buffer (Include NULL terminator)
+int pomelo_address_to_ip_string(
     pomelo_address_t * address,
     char * str,
     size_t capacity

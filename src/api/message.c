@@ -28,39 +28,6 @@ void * pomelo_message_get_extra(pomelo_message_t * message) {
 }
 
 
-pomelo_message_t * pomelo_message_new(pomelo_context_t * context) {
-    assert(context != NULL);
-    pomelo_message_t * message = context->acquire_message(context);
-    if (!message) {
-        // Cannot acquire new message
-        return NULL;
-    }
-
-    // After acquiring the message, the ref counter will be set to 1
-
-    // Acquire new delivery parcel
-    pomelo_delivery_parcel_t * parcel =
-        context->delivery_context->acquire_parcel(context->delivery_context);
-    if (!parcel) {
-        // Cannot acquire new delivery parcel
-        context->release_message(context, message);
-        return NULL;
-    }
-
-    // Attach the delivery parcel and set the wriable mode
-    message->parcel = parcel;
-    message->writer = pomelo_delivery_parcel_get_writer(parcel);
-    if (!message->writer) {
-        // Failed to get writer
-        pomelo_message_unref(message);
-        return NULL;
-    }
-
-    pomelo_extra_set(message->extra, NULL);
-    return message;
-}
-
-
 int pomelo_message_ref(pomelo_message_t * message) {
     assert(message != NULL);
     bool result = pomelo_reference_ref(&message->ref);
@@ -69,10 +36,9 @@ int pomelo_message_ref(pomelo_message_t * message) {
 }
 
 
-int pomelo_message_unref(pomelo_message_t * message) {
+void pomelo_message_unref(pomelo_message_t * message) {
     assert(message != NULL);
     pomelo_reference_unref(&message->ref);
-    return 0;
 }
 
 
@@ -83,11 +49,7 @@ void pomelo_message_set_context(
     assert(message != NULL);
     assert(context != NULL);
 
-    if (context == message->context) {
-        // The same context, nothing to do
-        return;
-    }
-
+    if (context == message->context) return; // The same context, nothing to do
     message->context = context;
 
     // Change the context of delivery parcel
@@ -108,30 +70,10 @@ int pomelo_message_reset(pomelo_message_t * message) {
     assert(message != NULL);
     pomelo_message_check_alive(message);
 
-    // Release current delivery parcel
-    if (message->parcel) {
-        pomelo_delivery_parcel_unref(message->parcel);
-        message->parcel = NULL;
-    }
-    message->writer = NULL;
-    message->reader = NULL;
-
-    // Acquire new delivery parcel
-    pomelo_delivery_context_t * delivery_context =
-        message->context->delivery_context;
-    pomelo_delivery_parcel_t * parcel =
-        delivery_context->acquire_parcel(delivery_context);
-    if (!parcel) {
-        // Cannot acquire new delivery parcel
-        return POMELO_ERR_MESSAGE_RESET;
-    }
-
-    // Attach the delivery parcel and set the wriable mode
-    message->parcel = parcel;
-    message->writer = pomelo_delivery_parcel_get_writer(parcel);
-    if (!message->writer) {
-        return POMELO_ERR_MESSAGE_RESET;
-    }
+    // Reset the parcel
+    pomelo_delivery_parcel_reset(message->parcel);
+    pomelo_delivery_writer_init(&message->writer, message->parcel);
+    message->mode = POMELO_MESSAGE_MODE_WRITE;
 
     return 0;
 }
@@ -141,124 +83,113 @@ size_t pomelo_message_size(pomelo_message_t * message) {
     assert(message != NULL);
     pomelo_message_check_alive(message);
 
-    if (message->reader) {
-        // Reading message
-        return pomelo_relivery_parcel_reader_remain_bytes(message->reader);
-    } else if (message->writer) {
-        // Writing message
-        return pomelo_delivery_parcel_writer_written_bytes(message->writer);
-    } else {
-        // Invalid case
-        return 0;
+    if (message->mode == POMELO_MESSAGE_MODE_READ) {
+        return pomelo_delivery_reader_remain_bytes(&message->reader);
+    } else if (message->mode == POMELO_MESSAGE_MODE_WRITE) {
+        return pomelo_delivery_writer_written_bytes(&message->writer);
     }
-}
-
-
-pomelo_message_t * pomelo_message_wrap(
-    pomelo_context_t * context,
-    pomelo_delivery_parcel_t * parcel
-) {
-    assert(context != NULL);
-    assert(parcel != NULL);
-
-    pomelo_message_t * message = context->acquire_message(context);
-    if (!message) {
-        // Failed to allocate message
-        return NULL;
-    }
-
-    // After acquiring the message, the ref counter will be set to 1
-
-    // Attach delivery parcel & its reader
-    message->parcel = parcel;
-    message->reader = pomelo_delivery_parcel_get_reader(parcel);
-    if (!message->reader) {
-        // Failed to get reader
-        pomelo_message_unref(message);
-        return NULL;
-    }
-
-    // Ref the delivery parcel
-    pomelo_delivery_parcel_ref(parcel);
-
-    // Change the delivery parcel context
-    pomelo_delivery_parcel_set_context(
-        parcel,
-        context->delivery_context
-    );
-
-    pomelo_extra_set(message->extra, NULL);
-    return message;
-}
-
-
-int pomelo_message_pack(pomelo_message_t * message) {
-    assert(message != NULL);
-    pomelo_delivery_parcel_t * parcel = message->parcel;
-    if (!parcel) {
-        return POMELO_ERR_MESSAGE_PACK;
-    }
-
-    // Pack the parcel
-    pomelo_delivery_parcel_pack(parcel);
-    message->writer = NULL;
-    message->reader = pomelo_delivery_parcel_get_reader(parcel);
 
     return 0;
 }
 
 
-void pomelo_message_reference_finalize(pomelo_reference_t * reference) {
-    assert(reference != NULL);
-    pomelo_message_t * message = (pomelo_message_t *) reference;
+int pomelo_message_init(
+    pomelo_message_t * message,
+    pomelo_message_info_t * info
+) {
+    assert(message != NULL);
+    assert(info != NULL);
+    assert(info->parcel != NULL);
+    assert(info->context != NULL);
+
+    // Initialize message values
+    pomelo_extra_set(message->extra, NULL);
+    message->context = info->context;
+    message->mode = info->mode;
+
+    // Attach the delivery parcel
+    pomelo_delivery_parcel_t * parcel = info->parcel;
+    message->parcel = parcel;
+    pomelo_delivery_parcel_ref(parcel);
+
+    // Set the extra of parcel
+    pomelo_delivery_parcel_set_extra(parcel, message);
+
+    // Initialize the writer or reader
+    switch (info->mode) {
+        case POMELO_MESSAGE_MODE_WRITE:
+            pomelo_delivery_writer_init(&message->writer, parcel);
+            break;
+
+        case POMELO_MESSAGE_MODE_READ:
+            pomelo_delivery_reader_init(&message->reader, parcel);
+            break;
+
+        default:
+            assert(false);
+            return -1;
+    }
+
+    // Initialize the reference
+    pomelo_reference_init(
+        &message->ref,
+        (pomelo_ref_finalize_cb) pomelo_message_on_finalize
+    );
+    return 0;
+}
+
+
+void pomelo_message_cleanup(pomelo_message_t * message) {
+    assert(message != NULL);
+    message->mode = POMELO_MESSAGE_MODE_UNSET;
+
     if (message->parcel) {
         pomelo_delivery_parcel_unref(message->parcel);
         message->parcel = NULL;
     }
-
-    // Clear the reader & writer
-    message->reader = NULL;
-    message->writer = NULL;
-
-    // Call the callback first
-    pomelo_message_on_released(message);
-
-    // Release the message
-    pomelo_context_t * context = message->context;
-    context->release_message(context, message);
 }
 
 
-pomelo_message_t * pomelo_message_clone(pomelo_message_t * message) {
+void pomelo_message_pack(pomelo_message_t * message) {
+    assert(message != NULL);
+    assert(message->parcel != NULL);
+
+    // Pack the parcel
+    pomelo_delivery_reader_init(&message->reader, message->parcel);
+    message->mode = POMELO_MESSAGE_MODE_READ;
+}
+
+
+void pomelo_message_unpack(pomelo_message_t * message) {
+    assert(message != NULL);
+    assert(message->parcel != NULL);
+
+    // Unpack the parcel
+    pomelo_delivery_writer_init(&message->writer, message->parcel);
+    message->mode = POMELO_MESSAGE_MODE_WRITE;
+}
+
+
+void pomelo_message_on_finalize(pomelo_message_t * message) {
+    assert(message != NULL);
+    pomelo_context_release_message(message->context, message);
+}
+
+
+void pomelo_message_prepare_send(pomelo_message_t * message, void * data) {
     assert(message != NULL);
 
-    if (!message->writer || !message->parcel) {
-        // This message is not writable, return NULL
-        return NULL;
-    }
+    message->send_callback_data = data;
+    message->flags |= POMELO_MESSAGE_FLAG_BUSY;
+    message->nsent = 0;
+    pomelo_message_ref(message);
+}
 
-    // First, acquire a message
-    pomelo_context_t * context = message->context;
-    pomelo_message_t * cloned_message = context->acquire_message(context);
 
-    if (!cloned_message) {
-        // Failed to acquire new message
-        return NULL;
-    }
-
-    // Everything will be cloned but extra data
-    cloned_message->parcel = pomelo_delivery_parcel_clone(message->parcel);
-
-    // Create writer
-    cloned_message->writer =
-        pomelo_delivery_parcel_get_writer(cloned_message->parcel);
-
-    if (!cloned_message->writer) {
-        pomelo_message_unref(cloned_message);
-        return NULL;
-    }
-
-    return cloned_message;
+void pomelo_message_finish_send(pomelo_message_t * message) {
+    assert(message != NULL);
+    message->flags &= ~POMELO_MESSAGE_FLAG_BUSY;
+    pomelo_message_unref(message);
 }
 
 
@@ -269,266 +200,340 @@ pomelo_message_t * pomelo_message_clone(pomelo_message_t * message) {
 
 int pomelo_message_write_buffer(
     pomelo_message_t * message,
-    size_t length,
-    const uint8_t * buffer
+    const uint8_t * buffer,
+    size_t length
 ) {
     assert(message != NULL);
     assert(buffer != NULL);
-    pomelo_delivery_parcel_writer_t * writer = message->writer;
 
-    if (!writer) {
-        // This message is read-only
-        return POMELO_ERR_MESSAGE_WRITE;
+    if (message->mode != POMELO_MESSAGE_MODE_WRITE) {
+        return POMELO_ERR_MESSAGE_WRITE; // This message is read-only
     }
 
-    size_t bytes = pomelo_delivery_parcel_writer_written_bytes(writer);
+    if (message->flags & POMELO_MESSAGE_FLAG_BUSY) {
+        return POMELO_ERR_MESSAGE_BUSY; // This message is busy
+    }
+
+    pomelo_delivery_writer_t * writer = &message->writer;
+    size_t bytes = pomelo_delivery_writer_written_bytes(writer);
     if (bytes + length > message->context->message_capacity) {
-        // Out of capacity
-        return POMELO_ERR_MESSAGE_OVERFLOW;
+        return POMELO_ERR_MESSAGE_OVERFLOW; // Out of capacity
     }
 
-    return pomelo_delivery_parcel_writer_write_buffer(writer, length, buffer);
+    return pomelo_delivery_writer_write(writer, buffer, length);
 }
 
 
-int pomelo_message_write_uint8(
-    pomelo_message_t * message,
-    uint8_t value
-) {
-    return pomelo_message_write_buffer(message, 1, &value);
+int pomelo_message_write_uint8(pomelo_message_t * message, uint8_t value) {
+    assert(message != NULL);
+    return pomelo_message_write_buffer(message, &value, sizeof(uint8_t));
 }
 
 
-int pomelo_message_write_uint16(
-    pomelo_message_t * message,
-    uint16_t value
-) {
-    uint8_t buffer[2];
+int pomelo_message_write_uint16(pomelo_message_t * message, uint16_t value) {
+    assert(message != NULL);
+    uint8_t buffer[sizeof(uint16_t)];
+    pomelo_payload_t payload;
 
-    buffer[0] = (uint8_t) value;
-    buffer[1] = (uint8_t) (value >> 8);
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
 
-    return pomelo_message_write_buffer(message, 2, buffer);
+    pomelo_payload_write_uint16_unsafe(&payload, value);
+    return pomelo_message_write_buffer(message, buffer, sizeof(buffer));
 }
 
 
-int pomelo_message_write_uint32(
-    pomelo_message_t * message,
-    uint32_t value
-) {
-    uint8_t buffer[4];
+int pomelo_message_write_uint32(pomelo_message_t * message, uint32_t value) {
+    assert(message != NULL);
+    uint8_t buffer[sizeof(uint32_t)];
+    pomelo_payload_t payload;
 
-    buffer[0] = (uint8_t) value;
-    buffer[1] = (uint8_t) (value >> 8);
-    buffer[2] = (uint8_t) (value >> 16);
-    buffer[3] = (uint8_t) (value >> 24);
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
 
-    return pomelo_message_write_buffer(message, 4, buffer);
+    pomelo_payload_write_uint32_unsafe(&payload, value);
+    return pomelo_message_write_buffer(message, buffer, sizeof(buffer));
 }
 
 
-int pomelo_message_write_uint64(
-    pomelo_message_t * message,
-    uint64_t value
-) {
-    uint8_t buffer[8];
+int pomelo_message_write_uint64(pomelo_message_t * message, uint64_t value) {
+    assert(message != NULL);
+    uint8_t buffer[sizeof(uint64_t)];
+    pomelo_payload_t payload;
 
-    buffer[0] = (uint8_t) value;
-    buffer[1] = (uint8_t) (value >> 8);
-    buffer[2] = (uint8_t) (value >> 16);
-    buffer[3] = (uint8_t) (value >> 24);
-    buffer[4] = (uint8_t) (value >> 32);
-    buffer[5] = (uint8_t) (value >> 40);
-    buffer[6] = (uint8_t) (value >> 48);
-    buffer[7] = (uint8_t) (value >> 56);
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
 
-    return pomelo_message_write_buffer(message, 8, buffer);
+    pomelo_payload_write_uint64_unsafe(&payload, value);
+    return pomelo_message_write_buffer(message, buffer, sizeof(buffer));
 }
 
 
-int pomelo_message_write_float32(
-    pomelo_message_t * message,
-    float value
-) {
-    return pomelo_message_write_uint32(message, *((uint32_t *) &value));
+int pomelo_message_write_float32(pomelo_message_t * message, float value) {
+    assert(message != NULL);
+    uint8_t buffer[sizeof(float)];
+    pomelo_payload_t payload;
+
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_write_float32_unsafe(&payload, value);
+    return pomelo_message_write_buffer(message, buffer, sizeof(buffer));
 }
 
 
-int pomelo_message_write_float64(
-    pomelo_message_t * message,
-    double value
-) {
-    return pomelo_message_write_uint64(message, *((uint64_t *) &value));
+int pomelo_message_write_float64(pomelo_message_t * message, double value) {
+    assert(message != NULL);
+    uint8_t buffer[sizeof(double)];
+    pomelo_payload_t payload;
+
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_write_float64_unsafe(&payload, value);
+    return pomelo_message_write_buffer(message, buffer, sizeof(buffer));
 }
 
 
-int pomelo_message_write_int8(
-    pomelo_message_t * message,
-    int8_t value
-) {
-    return pomelo_message_write_uint8(message, value);
+int pomelo_message_write_int8(pomelo_message_t * message, int8_t value) {
+    assert(message != NULL);
+    uint8_t buffer[sizeof(int8_t)];
+    pomelo_payload_t payload;
+
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_write_int8_unsafe(&payload, value);
+    return pomelo_message_write_buffer(message, buffer, sizeof(buffer));
 }
 
 
-int pomelo_message_write_int16(
-    pomelo_message_t * message,
-    int16_t value
-) {
-    return pomelo_message_write_uint16(message, value);
+int pomelo_message_write_int16(pomelo_message_t * message, int16_t value) {
+    assert(message != NULL);
+    uint8_t buffer[sizeof(int16_t)];
+    pomelo_payload_t payload;
+
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_write_int16_unsafe(&payload, value);
+    return pomelo_message_write_buffer(message, buffer, sizeof(buffer));
 }
 
 
-int pomelo_message_write_int32(
-    pomelo_message_t * message,
-    int32_t value
-) {
-    return pomelo_message_write_uint32(message, value);
+int pomelo_message_write_int32(pomelo_message_t * message, int32_t value) {
+    assert(message != NULL);
+    uint8_t buffer[sizeof(int32_t)];
+    pomelo_payload_t payload;
+
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_write_int32_unsafe(&payload, value);
+    return pomelo_message_write_buffer(message, buffer, sizeof(buffer));
 }
 
 
-int pomelo_message_write_int64(
-    pomelo_message_t * message,
-    int64_t value
-) {
-    return pomelo_message_write_uint64(message, value);
+int pomelo_message_write_int64(pomelo_message_t * message, int64_t value) {
+    assert(message != NULL);
+    uint8_t buffer[sizeof(int64_t)];
+    pomelo_payload_t payload;
+
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_write_int64_unsafe(&payload, value);
+    return pomelo_message_write_buffer(message, buffer, sizeof(buffer));
 }
 
 
 int pomelo_message_read_buffer(
     pomelo_message_t * message,
-    size_t length,
-    uint8_t * buffer
+    uint8_t * buffer,
+    size_t length
 ) {
     assert(message != NULL);
     assert(buffer != NULL);
 
-    if (!message->reader) {
-        // This message is write-only
-        return POMELO_ERR_MESSAGE_READ;
+    if (message->mode != POMELO_MESSAGE_MODE_READ) {
+        return POMELO_ERR_MESSAGE_READ; // This message is write-only
     }
 
-    pomelo_delivery_parcel_reader_t * reader = message->reader;
-    int ret = pomelo_delivery_parcel_reader_read_buffer(reader, length, buffer);
-    if (ret < 0) {
-        return POMELO_ERR_MESSAGE_UNDERFLOW;
-    }
-
-    return 0;
-}
-
-
-int pomelo_message_read_uint8(
-    pomelo_message_t * message,
-    uint8_t * value
-) {
-    return pomelo_message_read_buffer(message, 1, value);
-}
-
-
-int pomelo_message_read_uint16(
-    pomelo_message_t * message,
-    uint16_t * value
-) {
-    uint8_t buffer[2];
-    int ret = pomelo_message_read_buffer(message, 2, buffer);
-    if (ret < 0) {
-        return ret;
-    }
-
-    *value = buffer[0] | buffer[1] << 8;
-    return 0;
-}
-
-
-int pomelo_message_read_uint32(
-    pomelo_message_t * message,
-    uint32_t * value
-) {
-    uint8_t buffer[4];
-    int ret = pomelo_message_read_buffer(message, 4, buffer);
-    if (ret < 0) {
-        return ret;
-    }
-
-    *value = (
-        buffer[0] |
-        buffer[1] << 8 |
-        buffer[2] << 16 |
-        buffer[3] << 24
+    int ret = pomelo_delivery_reader_read(
+        &message->reader, buffer, length
     );
 
+    return (ret < 0) ? POMELO_ERR_MESSAGE_UNDERFLOW : 0;
+}
+
+
+int pomelo_message_read_uint8(pomelo_message_t * message, uint8_t * value) {
+    assert(message != NULL);
+    assert(value != NULL);
+    return pomelo_message_read_buffer(message, value, sizeof(uint8_t));
+}
+
+
+int pomelo_message_read_uint16(pomelo_message_t * message, uint16_t * value) {
+    assert(message != NULL);
+    assert(value != NULL);
+
+    uint8_t buffer[sizeof(uint16_t)];
+    int ret = pomelo_message_read_buffer(message, buffer, sizeof(buffer));
+    if (ret < 0) return ret;
+
+    pomelo_payload_t payload;
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_read_uint16_unsafe(&payload, value);
     return 0;
 }
 
 
-int pomelo_message_read_uint64(
-    pomelo_message_t * message,
-    uint64_t * value
-) {
-    uint8_t buffer[8];
-    int ret = pomelo_message_read_buffer(message, 8, buffer);
-    if (ret < 0) {
-        return ret;
-    }
+int pomelo_message_read_uint32(pomelo_message_t * message, uint32_t * value) {
+    assert(message != NULL);
+    assert(value != NULL);
 
-    *value = (
-        (uint64_t) buffer[0] |
-        (uint64_t) buffer[1] << 8 |
-        (uint64_t) buffer[2] << 16 |
-        (uint64_t) buffer[3] << 24 |
-        (uint64_t) buffer[4] << 32 |
-        (uint64_t) buffer[5] << 40 |
-        (uint64_t) buffer[6] << 48 |
-        (uint64_t) buffer[7] << 56
-    );
+    uint8_t buffer[sizeof(uint32_t)];
+    int ret = pomelo_message_read_buffer(message, buffer, sizeof(buffer));
+    if (ret < 0) return ret;
 
+    pomelo_payload_t payload;
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_read_uint32_unsafe(&payload, value);
     return 0;
 }
 
 
-int pomelo_message_read_float32(
-    pomelo_message_t * message,
-    float * value
-) {
-    return pomelo_message_read_uint32(message, (uint32_t *) value);
+int pomelo_message_read_uint64(pomelo_message_t * message, uint64_t * value) {
+    assert(message != NULL);
+    assert(value != NULL);
+
+    uint8_t buffer[sizeof(uint64_t)];
+    int ret = pomelo_message_read_buffer(message, buffer, sizeof(buffer));
+    if (ret < 0) return ret;
+
+    pomelo_payload_t payload;
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_read_uint64_unsafe(&payload, value);
+    return 0;
 }
 
 
-int pomelo_message_read_float64(
-    pomelo_message_t * message,
-    double * value
-) {
-    return pomelo_message_read_uint64(message, (uint64_t *) value);
+int pomelo_message_read_float32(pomelo_message_t * message, float * value) {
+    assert(message != NULL);
+    assert(value != NULL);
+    uint8_t buffer[sizeof(float)];
+    int ret = pomelo_message_read_buffer(message, buffer, sizeof(buffer));
+    if (ret < 0) return ret;
+
+    pomelo_payload_t payload;
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_read_float32_unsafe(&payload, value);
+    return 0;
 }
 
 
-int pomelo_message_read_int8(
-    pomelo_message_t * message,
-    int8_t * value
-) {
-    return pomelo_message_read_uint8(message, (uint8_t *) value);
+int pomelo_message_read_float64(pomelo_message_t * message, double * value) {
+    assert(message != NULL);
+    assert(value != NULL);
+    uint8_t buffer[sizeof(double)];
+    int ret = pomelo_message_read_buffer(message, buffer, sizeof(buffer));
+    if (ret < 0) return ret;
+
+    pomelo_payload_t payload;
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_read_float64_unsafe(&payload, value);
+    return 0;
 }
 
 
-int pomelo_message_read_int16(
-    pomelo_message_t * message,
-    int16_t * value
-) {
-    return pomelo_message_read_uint16(message, (uint16_t *) value);
+int pomelo_message_read_int8(pomelo_message_t * message, int8_t * value) {
+    assert(message != NULL);
+    assert(value != NULL);
+    uint8_t buffer[sizeof(int8_t)];
+    int ret = pomelo_message_read_buffer(message, buffer, sizeof(buffer));
+    if (ret < 0) return ret;
+
+    pomelo_payload_t payload;
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_read_int8_unsafe(&payload, value);
+    return 0;
 }
 
 
-int pomelo_message_read_int32(
-    pomelo_message_t * message,
-    int32_t * value
-) {
-    return pomelo_message_read_uint32(message, (uint32_t *) value);
+int pomelo_message_read_int16(pomelo_message_t * message, int16_t * value) {
+    assert(message != NULL);
+    assert(value != NULL);
+    uint8_t buffer[sizeof(int16_t)];
+    int ret = pomelo_message_read_buffer(message, buffer, sizeof(buffer));
+    if (ret < 0) return ret;
+
+    pomelo_payload_t payload;
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_read_int16_unsafe(&payload, value);
+    return 0;
 }
 
 
-int pomelo_message_read_int64(
-    pomelo_message_t * message,
-    int64_t * value
-) {
-    return pomelo_message_read_uint64(message, (uint64_t *) value);
+int pomelo_message_read_int32(pomelo_message_t * message, int32_t * value) {
+    assert(message != NULL);
+    assert(value != NULL);
+    uint8_t buffer[sizeof(int32_t)];
+    int ret = pomelo_message_read_buffer(message, buffer, sizeof(buffer));
+    if (ret < 0) return ret;
+
+    pomelo_payload_t payload;
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_read_int32_unsafe(&payload, value);
+    return 0;
+}
+
+
+int pomelo_message_read_int64(pomelo_message_t * message, int64_t * value) {    
+    assert(message != NULL);
+    assert(value != NULL);
+    uint8_t buffer[sizeof(int64_t)];
+    int ret = pomelo_message_read_buffer(message, buffer, sizeof(buffer));
+    if (ret < 0) return ret;
+
+    pomelo_payload_t payload;
+    payload.data = buffer;
+    payload.position = 0;
+    payload.capacity = sizeof(buffer);
+
+    pomelo_payload_read_int64_unsafe(&payload, value);
+    return 0;
 }

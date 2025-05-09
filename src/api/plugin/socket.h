@@ -39,17 +39,6 @@ pomelo_channel_mode POMELO_PLUGIN_CALL pomelo_plugin_socket_get_channel_mode(
     size_t channel_index
 );
 
-/// @brief Attach socket
-void POMELO_PLUGIN_CALL pomelo_plugin_socket_attach(
-    pomelo_plugin_t * plugin,
-    pomelo_socket_t * socket
-);
-
-/// @brief Detach socket
-void POMELO_PLUGIN_CALL pomelo_plugin_socket_detach(
-    pomelo_plugin_t * plugin,
-    pomelo_socket_t * socket
-);
 
 /// @brief Get time of socket
 uint64_t POMELO_PLUGIN_CALL pomelo_plugin_socket_time(
@@ -57,14 +46,6 @@ uint64_t POMELO_PLUGIN_CALL pomelo_plugin_socket_time(
     pomelo_socket_t * socket
 );
 
-
-/* -------------------------------------------------------------------------- */
-/*                               Private APIs                                 */
-/* -------------------------------------------------------------------------- */
-
-void pomelo_plugin_socket_process_detach(
-    pomelo_plugin_socket_detach_command_t * command
-);
 
 #ifdef __cplusplus
 }

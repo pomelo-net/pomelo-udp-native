@@ -9,10 +9,10 @@ pomelo_platform_t * pomelo_test_platform_create(
     pomelo_allocator_t * allocator
 ) {
     // Create platform first
-    pomelo_platform_uv_options_t options;
-    pomelo_platform_uv_options_init(&options);
-    options.allocator = allocator;
-    options.uv_loop = uv_default_loop();
+    pomelo_platform_uv_options_t options = {
+        .allocator = allocator,
+        .uv_loop = uv_default_loop()
+    };
 
     return pomelo_platform_uv_create(&options);
 }

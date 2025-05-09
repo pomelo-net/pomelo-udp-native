@@ -6,6 +6,15 @@
 #include "utils/map.h"
 #include "utils/atomic.h"
 
+
+#ifndef NDEBUG
+#define POMELO_PLUGIN_SIGNATURE 0xfa12e7
+#define pomelo_plugin_check_signature(plugin)                                  \
+    assert((plugin)->signature == POMELO_PLUGIN_SIGNATURE)
+#else
+#define pomelo_plugin_check_signature(plugin) (void) (plugin)
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -40,35 +49,17 @@ struct pomelo_plugin_impl_s {
     /// @brief Associated data
     pomelo_atomic_uint64_t data;
 
-    /// @brief [Synchronized] Central pool of session creating commands
-    pomelo_pool_t * session_create_command_pool;
+    /// @brief Entry of this plugin in attached list
+    pomelo_list_entry_t * attached_entry;
 
-    /// @brief Releasing pool for main thread. This reduces the number of lock
-    /// acquiring times.
-    pomelo_shared_pool_t * session_create_command_pool_release;
+    /// @brief Acquired messages for later releasing
+    pomelo_list_t * acquired_messages;
 
-    /// @brief [Synchronized] Central pool of session destroying commands
-    pomelo_pool_t * session_destroy_command_pool;
+    /// @brief Thread-safe executor for this plugin
+    pomelo_threadsafe_executor_t * executor;
 
-    /// @brief Releasing pool for main thread. This reduces the number of lock
-    /// acquiring times.
-    pomelo_shared_pool_t * session_destroy_command_pool_release;
-
-    /// @brief [Synchronized] Central pool of session receiving commands
-    pomelo_pool_t * session_receive_command_pool;
-
-    /// @brief Releasing pool for main thread. This reduces the number of lock
-    /// acquiring times.
-    pomelo_shared_pool_t * session_receive_command_pool_release;
-
-    /// @brief Pool of sessions
-    pomelo_pool_t * session_plugin_pool;
-
-    /// @brief Pool of channels
-    pomelo_pool_t * channel_plugin_pool;
-
-    /// @brief Node of this plugin in attached list
-    pomelo_list_node_t * attached_list_node;
+    /// @brief [Synchronized] Pool of commands for the thread-safe executor
+    pomelo_pool_t * command_pool;
 
     /* Callbacks */
     pomelo_plugin_on_unload_callback on_unload_callback;
@@ -77,12 +68,15 @@ struct pomelo_plugin_impl_s {
     pomelo_plugin_socket_listening_callback socket_on_listening_callback;
     pomelo_plugin_socket_connecting_callback socket_on_connecting_callback;
     pomelo_plugin_socket_common_callback socket_on_stopped_callback;
-    pomelo_plugin_session_create_callback session_create_callback;
-    pomelo_plugin_session_receive_callback session_receive_callback;
+    pomelo_plugin_session_send_callback session_on_send_callback;
     pomelo_plugin_session_disconnect_callback session_disconnect_callback;
     pomelo_plugin_session_get_rtt_callback session_get_rtt_callback;
     pomelo_plugin_session_set_mode_callback session_set_channel_mode_callback;
-    pomelo_plugin_session_send_callback session_send_callback;
+
+#ifndef NDEBUG
+    /// @brief The signature of the plugin
+    int signature;
+#endif
 };
 
 
@@ -93,8 +87,6 @@ struct pomelo_plugin_impl_s {
 /// @brief Stop the socket for all plugins
 void pomelo_plugin_stop_socket(pomelo_socket_t * socket);
 
-/// @brief Process when all attached plugins detached
-void pomelo_plugin_on_all_plugins_detached_socket(pomelo_socket_t * socket);
 
 /* -------------------------------------------------------------------------- */
 /*                                Private APIs                                */
@@ -125,12 +117,10 @@ void POMELO_PLUGIN_CALL pomelo_plugin_configure(
     pomelo_plugin_socket_listening_callback socket_on_listening_callback,
     pomelo_plugin_socket_connecting_callback socket_on_connecting_callback,
     pomelo_plugin_socket_common_callback socket_on_stopped_callback,
-    pomelo_plugin_session_create_callback session_create_callback,
-    pomelo_plugin_session_receive_callback session_receive_callback,
+    pomelo_plugin_session_send_callback session_on_send_callback,
     pomelo_plugin_session_disconnect_callback session_disconnect_callback,
     pomelo_plugin_session_get_rtt_callback session_get_rtt_callback,
-    pomelo_plugin_session_set_mode_callback session_set_channel_mode_callback,
-    pomelo_plugin_session_send_callback session_send_callback
+    pomelo_plugin_session_set_mode_callback session_set_mode_callback
 );
 
 /// @brief Set associated data for plugin
@@ -183,6 +173,11 @@ void pomelo_plugin_parse_address(
     uint8_t * address_host,
     uint16_t address_port
 );
+
+
+/// @brief Do cleanup after callbacks return
+void pomelo_plugin_post_callback_cleanup(pomelo_plugin_impl_t * impl);
+
 
 #ifdef __cplusplus
 }

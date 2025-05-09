@@ -2,8 +2,14 @@
 #include <string.h>
 #include <inttypes.h>
 #include <stdlib.h>
-#include "uv.h"
+#include <stdio.h>
 #include "pomelo/address.h"
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#endif
+
 
 #define ADDRESS_V6_OPEN_BRACKET '['
 #define ADDRESS_V6_CLOSE_BRACKET ']'
@@ -22,7 +28,7 @@
 static int pomelo_address_parse_port(const char * str, uint16_t * port) {
     uint16_t result = 0;
     char c;
-    while ((c = (*str))) {
+    while ((c = (*str)) != 0) {
         if (c < '0' || c > '9') {
             return -1;
         }
@@ -49,7 +55,7 @@ static int pomelo_address_analyze_string(
     int count = 0;
     int last_index = -1;
 
-    while ((c = (str[i]))) {
+    while ((c = (str[i])) != 0) {
         if (c == ':') {
             count++;
             last_index = i;
@@ -60,9 +66,17 @@ static int pomelo_address_analyze_string(
         }
     }
 
-    *str_length = i;
-    *colon_count = count;
-    *last_colon_index = last_index;
+    if (str_length) {
+        *str_length = i;
+    }
+
+    if (colon_count) {
+        *colon_count = count;
+    }
+
+    if (last_colon_index) {
+        *last_colon_index = last_index;
+    }
 
     return 0;
 }
@@ -113,8 +127,8 @@ int pomelo_address_from_string(pomelo_address_t * address, const char * str) {
         addr.sin_family = AF_INET;
         addr.sin_port = port;
 
-        ret = uv_inet_pton(AF_INET, ip_str, &addr.sin_addr);
-        if (ret < 0) return -1;
+        int success = inet_pton(AF_INET, ip_str, &addr.sin_addr);
+        if (!success) return -1;
 
         // Just 1 colon: IPv4
         return pomelo_address_from_sockaddr(
@@ -137,12 +151,62 @@ int pomelo_address_from_string(pomelo_address_t * address, const char * str) {
     addr.sin6_family = AF_INET6;
     addr.sin6_port = port;
 
-    ret = uv_inet_pton(AF_INET6, ip_str, &addr.sin6_addr);
-    if (ret < 0) return ret;
+    int success = inet_pton(AF_INET6, ip_str, &addr.sin6_addr);
+    if (!success) return -1;
+
     return pomelo_address_from_sockaddr(
         address,
         (const struct sockaddr *) &addr
     );
+}
+
+
+int pomelo_address_from_string_ex(
+    pomelo_address_t * address,
+    const char * ip,
+    uint16_t port
+) {
+    assert(address != NULL);
+    assert(ip != NULL);
+
+    int colon_count = 0;
+    int ret = pomelo_address_analyze_string(
+        ip, NULL,
+        &colon_count,
+        NULL,
+        MAX_ADDRESS_V6_LEN
+    );
+    if (ret < 0) return ret;
+
+    if (colon_count > 0) {
+        // IPv6
+        address->type = POMELO_ADDRESS_IPV6;
+        struct sockaddr_in6 addr;
+        addr.sin6_family = AF_INET6;
+        addr.sin6_port = htons(port);
+
+        int success = inet_pton(AF_INET6, ip, &addr.sin6_addr);
+        if (!success) return -1;
+
+        return pomelo_address_from_sockaddr(
+            address,
+            (const struct sockaddr *) &addr
+        );
+    } else {
+        // IPv4
+        address->type = POMELO_ADDRESS_IPV4;
+        struct sockaddr_in addr;
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+
+        int success = inet_pton(AF_INET, ip, &addr.sin_addr);
+        if (!success) return -1;
+
+        return pomelo_address_from_sockaddr(
+            address,
+            (const struct sockaddr *) &addr
+        );
+    }
 }
 
 
@@ -172,7 +236,20 @@ int pomelo_address_to_string(
 
     size_t length = 0;
     if (address->type == POMELO_ADDRESS_IPV4) {
-        uv_ip4_name((const struct sockaddr_in *) &sockaddr, str, capacity);
+        const char * success = inet_ntop(
+            AF_INET,
+            &((struct sockaddr_in *) &sockaddr)->sin_addr,
+            str,
+            // Avoid warning
+            #ifdef _WIN32
+            capacity
+            #else
+            (socklen_t) capacity
+            #endif
+        );
+        if (!success) {
+            return -1;
+        }
         length = strlen(str);
     } else {
         // Prepend open bracket
@@ -182,13 +259,19 @@ int pomelo_address_to_string(
             length = 1;
             // Not enough space to append IPv6
         } else {
-            uv_ip6_name(
-                (const struct sockaddr_in6 *) &sockaddr,
+            const char * success = inet_ntop(
+                AF_INET6,
+                &((struct sockaddr_in6 *) &sockaddr)->sin6_addr,
                 str + 1,
-                max_length // capacity - 1
+                #ifdef _WIN32
+                max_length
+                #else
+                (socklen_t) max_length
+                #endif
             );
-
-            // Append close bracket (if enough)
+            if (!success) {
+                return -1;
+            }
             length = strlen(str);
             if (length < max_length) {
                 str[length] = ']';
@@ -216,6 +299,55 @@ int pomelo_address_to_string(
     str[length + copy_len] = '\0';
 
     return 0;
+}
+
+
+int pomelo_address_to_ip_string(
+    pomelo_address_t * address,
+    char * str,
+    size_t capacity
+) {
+    assert(address != NULL);
+    assert(str != NULL);
+
+    if (capacity == 0) {
+        return 0;
+    }
+
+    if (capacity == 1) {
+        str[0] = '\0';
+        return 0;
+    }
+
+    struct sockaddr_storage sockaddr;
+    int ret = pomelo_address_to_sockaddr(address, &sockaddr);
+    if (ret < 0) return ret;
+
+    if (address->type == POMELO_ADDRESS_IPV4) {
+        const char * success = inet_ntop(
+            AF_INET,
+            &((struct sockaddr_in *) &sockaddr)->sin_addr,
+            str,
+            #ifdef _WIN32
+            capacity
+            #else
+            (socklen_t) capacity
+            #endif
+        );
+        return success ? 0 : -1;
+    } else {
+        const char * success = inet_ntop(
+            AF_INET6,
+            &((struct sockaddr_in6 *) &sockaddr)->sin6_addr,
+            str,
+            #ifdef _WIN32
+            capacity
+            #else
+            (socklen_t) capacity
+            #endif
+        );
+        return success ? 0 : -1;
+    }
 }
 
 

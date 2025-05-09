@@ -75,92 +75,100 @@ static int element_signature_generator = 0x5514ab;
 #endif // ~NDEBUG
 
 
-/* -------------------------------------------------------------------------- */
-/*                                Public APIs                                 */
-/* -------------------------------------------------------------------------- */
-
-
-void pomelo_pool_options_init(pomelo_pool_options_t * options) {
-    assert(options != NULL);
-    memset(options, 0, sizeof(pomelo_pool_options_t));
+void pomelo_pool_destroy(pomelo_pool_t * pool) {
+    assert(pool != NULL);
+    if (&pool->root->base == pool) {
+        pomelo_pool_root_destroy((pomelo_pool_root_t *) pool);
+    } else {
+        pomelo_pool_shared_destroy((pomelo_pool_shared_t *) pool);
+    }
 }
 
 
-pomelo_pool_t * pomelo_pool_create(pomelo_pool_options_t * options) {
-    assert(options != NULL);
+void * pomelo_pool_acquire(pomelo_pool_t * pool, void * init_data) {
+    assert(pool != NULL);
+    return pool->acquire(pool, init_data);
+}
 
-    if (options->element_size <= 0) {
-        return NULL;
-    }
+
+void pomelo_pool_release(pomelo_pool_t * pool, void * data) {
+    assert(pool != NULL);
+    pool->release(pool, data);
+}
+
+
+pomelo_pool_t * pomelo_pool_root_create(pomelo_pool_root_options_t * options) {
+    assert(options != NULL);
+    if (options->element_size <= 0) return NULL; // Invalid element size
 
     pomelo_allocator_t * allocator = options->allocator;
     if (!allocator) {
         allocator = pomelo_allocator_default();
     }
 
-    if (options->zero_initialized) {
-        if (options->allocate_callback || options->deallocate_callback) {
-            // Zero initialized with alloc/dealloc callback is probihited
-            assert(0 &&
-                "Using zero_initialized flag with allocate/deallocate callbacks"
-                " is probihited"
-            );
-            return NULL;
-        }
+    if (options->zero_init && (options->on_alloc || options->on_free)) {
+        // Using zero_init flag with on_alloc/on_free is not allowed
+        assert(false && "zero_init + on_alloc/on_free is not allowed");
+        return NULL;
     }
 
-    pomelo_pool_t * pool = pomelo_allocator_malloc_t(allocator, pomelo_pool_t);
+    // Allocate memory for pool
+    pomelo_pool_root_t * pool =
+        pomelo_allocator_malloc_t(allocator, pomelo_pool_root_t);
     if (!pool) return NULL;
-
-    memset(pool, 0, sizeof(pomelo_pool_t));
+    memset(pool, 0, sizeof(pomelo_pool_root_t));
     pomelo_pool_set_signature(pool);
 
     pool->allocator = allocator;
     pool->element_size = options->element_size;
     pool->available_max = options->available_max;
     pool->allocated_max = options->allocated_max;
-    pool->allocate_callback = options->allocate_callback;
-    pool->deallocate_callback = options->deallocate_callback;
-    pool->release_callback = options->release_callback;
-    pool->acquire_callback = options->acquire_callback;
-    pool->callback_context = options->callback_context;
-    pool->zero_initialized = options->zero_initialized;
+    pool->on_alloc = options->on_alloc;
+    pool->on_free = options->on_free;
+    pool->on_cleanup = options->on_cleanup;
+    pool->on_init = options->on_init;
+    pool->alloc_data = options->alloc_data;
+    pool->zero_init = options->zero_init;
 
     if (options->synchronized) {
         // This pool is synchronized.
         pool->mutex = pomelo_mutex_create(allocator);
         if (!pool->mutex) {
-            pomelo_pool_destroy(pool);
+            pomelo_pool_root_destroy(pool);
             return NULL;
         }
     }
 
-    return pool;
+    // Initialize base
+    pomelo_pool_t * base = &pool->base;
+    base->root = pool; // Itself
+    base->acquire = (pomelo_pool_acquire_fn) pomelo_pool_root_acquire;
+    base->release = (pomelo_pool_release_fn) pomelo_pool_root_release;
+
+    return base;
 }
 
 
-void pomelo_pool_destroy(pomelo_pool_t * pool) {
+void pomelo_pool_root_destroy(pomelo_pool_root_t * pool) {
     assert(pool != NULL);
     pomelo_pool_check_signature(pool);
 
     pomelo_allocator_t * allocator = pool->allocator;
-    void * context = pool->callback_context;
-
     pomelo_pool_element_t * element = pool->allocated_elements;
     pomelo_pool_element_t * current;
     while (element) {
         current = element;
         element = element->allocated_next;
-        uint8_t flags = current->flags;
-        if (pool->release_callback) {
+        uint32_t flags = current->flags;
+        if (pool->on_cleanup) {
             if (flags & POMELO_POOL_ELEMENT_ACQUIRED) {
-                pool->release_callback(current + 1, context);
+                pool->on_cleanup(current + 1);
             }
         }
 
-        if (pool->deallocate_callback) {
+        if (pool->on_free) {
             if (flags & POMELO_POOL_ELEMENT_INITIALIZED) {
-                pool->deallocate_callback(current + 1, context);
+                pool->on_free(current + 1);
             }
         }
         pomelo_allocator_free(allocator, current);
@@ -179,9 +187,12 @@ void pomelo_pool_destroy(pomelo_pool_t * pool) {
 }
 
 
-void * pomelo_pool_acquire(pomelo_pool_t * pool) {
+void * pomelo_pool_root_acquire(pomelo_pool_root_t * pool, void * init_data) {
     assert(pool != NULL);
     pomelo_pool_check_signature(pool);
+
+    // Check if init_data is provided when on_init is not set accidentally
+    assert(pool->on_init || !init_data);
 
     // Try to get from available list
     pomelo_pool_element_t * element = NULL;
@@ -199,9 +210,14 @@ void * pomelo_pool_acquire(pomelo_pool_t * pool) {
         element->flags = 0; // Reset flag
 
         data = element + 1;
-        if (pool->allocate_callback) {
-            int ret = pool->allocate_callback(data, pool->callback_context);
+        if (pool->on_alloc) {
+            int ret = pool->on_alloc(data, pool->alloc_data);
             if (ret < 0) {
+                // Call the on_free (if any)
+                if (pool->on_free) {
+                    pool->on_free(data);
+                }
+
                 // Allocating callback returns an error
                 pomelo_pool_release_elements(pool, 1, &element);
                 return NULL;
@@ -214,14 +230,19 @@ void * pomelo_pool_acquire(pomelo_pool_t * pool) {
         data = element + 1;
     }
 
-    if (pool->zero_initialized) {
+    if (pool->zero_init) {
         memset(data, 0, pool->element_size);
     }
 
-    if (pool->acquire_callback) {
-        int ret = pool->acquire_callback(data, pool->callback_context);
+    if (pool->on_init) {
+        int ret = pool->on_init(data, init_data);
         if (ret < 0) {
             // Acquiring callback returns an error
+            // Call the on_cleanup (if any)
+            if (pool->on_cleanup) {
+                pool->on_cleanup(data);
+            }
+
             pomelo_pool_release_elements(pool, 1, &element);
             return NULL;
         }
@@ -236,7 +257,7 @@ void * pomelo_pool_acquire(pomelo_pool_t * pool) {
 }
 
 
-void pomelo_pool_release(pomelo_pool_t * pool, void * data) {
+void pomelo_pool_root_release(pomelo_pool_root_t * pool, void * data) {
     assert(pool != NULL);
     assert(data != NULL);
     pomelo_pool_check_signature(pool);
@@ -248,8 +269,8 @@ void pomelo_pool_release(pomelo_pool_t * pool, void * data) {
         return; // The element's already released
     }
 
-    if (pool->release_callback) {
-        pool->release_callback(data, pool->callback_context);
+    if (pool->on_cleanup) {
+        pool->on_cleanup(data);
     }
 
     // Clear acquired flag
@@ -259,12 +280,8 @@ void pomelo_pool_release(pomelo_pool_t * pool, void * data) {
 }
 
 
-/* -------------------------------------------------------------------------- */
-/*                               Private APIs                                 */
-/* -------------------------------------------------------------------------- */
-
 size_t pomelo_pool_acquire_elements(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     size_t nelements,
     pomelo_pool_element_t ** elements
 ) {
@@ -295,7 +312,7 @@ size_t pomelo_pool_acquire_elements(
 
 
 size_t pomelo_pool_allocate_elements(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     size_t nelements,
     pomelo_pool_element_t ** elements
 ) {
@@ -319,6 +336,7 @@ size_t pomelo_pool_allocate_elements(
         pomelo_pool_element_t * element =
             pomelo_allocator_malloc(pool->allocator, element_size);
         if (!element) break; // Failed to allocate new element
+        memset(element, 0, element_size); // Set new element with zero
         pomelo_pool_set_element_signature(pool, element);
         elements[nallocated++] = element;
     }
@@ -333,7 +351,7 @@ size_t pomelo_pool_allocate_elements(
 
 
 void pomelo_pool_release_elements(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     size_t nelements,
     pomelo_pool_element_t ** elements
 ) {
@@ -373,20 +391,21 @@ void pomelo_pool_release_elements(
 /*                            Shared pool APIs                                */
 /* -------------------------------------------------------------------------- */
 
-void pomelo_shared_pool_options_init(pomelo_shared_pool_options_t * options) {
-    assert(options != NULL);
-    memset(options, 0, sizeof(pomelo_shared_pool_options_t));
-    options->buffers = POMELO_SHARED_POOL_DEFAULT_BUFFERS;
-}
-
-
-pomelo_shared_pool_t * pomelo_shared_pool_create(
-    pomelo_shared_pool_options_t * options
+pomelo_pool_t * pomelo_pool_shared_create(
+    pomelo_pool_shared_options_t * options
 ) {
     assert(options != NULL);
-    if (!options->master_pool || options->buffers == 0) {
-        // No master pool is provided or number of buffers is zero
-        return NULL;
+    if (!options->origin_pool) return NULL; // No origin pool is provided
+    pomelo_pool_root_t * root = options->origin_pool->root;
+    assert(root != NULL); // Root pool is required
+    if (!root->mutex) {
+        assert(false && "Root pool must be synchronized");
+        return NULL; // Root pool is not synchronized
+    }
+
+    size_t buffers = options->buffers;
+    if (buffers == 0) {
+        buffers = POMELO_SHARED_POOL_DEFAULT_BUFFERS;
     }
 
     pomelo_allocator_t * allocator = options->allocator;
@@ -394,44 +413,46 @@ pomelo_shared_pool_t * pomelo_shared_pool_create(
         allocator = pomelo_allocator_default();
     }
 
-    pomelo_shared_pool_t * pool =
-        pomelo_allocator_malloc_t(allocator, pomelo_shared_pool_t);
-    if (!pool) {
-        // Failed to allocate new pool
-        return NULL;
-    }
+    pomelo_pool_shared_t * pool =
+        pomelo_allocator_malloc_t(allocator, pomelo_pool_shared_t);
+    if (!pool) return NULL; // Failed to allocate new pool
 
-    memset(pool, 0, sizeof(pomelo_shared_pool_t));
+    memset(pool, 0, sizeof(pomelo_pool_shared_t));
     pomelo_shared_pool_set_signature(pool);
 
     pool->allocator = allocator;
-    pool->master_pool = options->master_pool;
-    pool->buffers = options->buffers;
-    pool->nelements = options->buffers * 2;
+    pool->buffers = buffers;
+    pool->nelements = buffers * 2;
 
     pool->elements = pomelo_allocator_malloc(
         allocator,
         pool->nelements * sizeof(pomelo_pool_element_t *)
     );
     if (!pool->elements) {
-        pomelo_shared_pool_destroy(pool);
+        pomelo_pool_shared_destroy(pool);
         return NULL;
     }
 
-    return pool;
+    // Initialize base
+    pomelo_pool_t * base = &pool->base;
+    base->root = root;
+    base->acquire = (pomelo_pool_acquire_fn) pomelo_shared_pool_acquire;
+    base->release = (pomelo_pool_release_fn) pomelo_pool_shared_release;
+
+    return base;
 }
 
 
-void pomelo_shared_pool_destroy(pomelo_shared_pool_t * pool) {
+void pomelo_pool_shared_destroy(pomelo_pool_shared_t * pool) {
     assert(pool != NULL);
     pomelo_shared_pool_check_signature(pool);
 
-    pomelo_allocator_t * allocator = pool->master_pool->allocator;
+    pomelo_allocator_t * allocator = pool->allocator;
 
     if (pool->index > 0) {
         // Release all holding elements
         pomelo_pool_release_elements(
-            pool->master_pool,
+            pool->base.root,
             pool->index,
             pool->elements
         );
@@ -447,15 +468,18 @@ void pomelo_shared_pool_destroy(pomelo_shared_pool_t * pool) {
 }
 
 
-void * pomelo_shared_pool_acquire(pomelo_shared_pool_t * pool) {
+void * pomelo_shared_pool_acquire(
+    pomelo_pool_shared_t * pool,
+    void * init_data
+) {
     assert(pool != NULL);
 
     pomelo_shared_pool_check_signature(pool);
-    pomelo_pool_t * master_pool = pool->master_pool;
+    pomelo_pool_root_t * root = pool->base.root;
 
     if (pool->index == 0) {
         pool->index += pomelo_pool_acquire_elements(
-            master_pool,
+            root,
             pool->buffers,
             pool->elements
         );
@@ -464,7 +488,7 @@ void * pomelo_shared_pool_acquire(pomelo_shared_pool_t * pool) {
     if (pool->index == 0) {
         // No more element to acquire, request allocating new elements
         pool->index += pomelo_pool_allocate_elements(
-            master_pool,
+            root,
             pool->buffers,
             pool->elements
         );
@@ -480,12 +504,15 @@ void * pomelo_shared_pool_acquire(pomelo_shared_pool_t * pool) {
     void * data = element + 1;
 
     // Initialize (if it has not been done before yet)
-    void * callback_context = master_pool->callback_context;
     if (!(element->flags & POMELO_POOL_ELEMENT_INITIALIZED)) {
-        pomelo_pool_callback allocate_callback = master_pool->allocate_callback;
-        if (allocate_callback) {
-            int ret = allocate_callback(data, callback_context);
+        if (root->on_alloc) {
+            int ret = root->on_alloc(data, root->alloc_data);
             if (ret < 0) {
+                // Call the on_free (if any)
+                if (root->on_free) {
+                    root->on_free(data);
+                }
+
                 // Failed to acquire, return to pool
                 pool->elements[pool->index++] = data;
                 return NULL;
@@ -499,16 +526,20 @@ void * pomelo_shared_pool_acquire(pomelo_shared_pool_t * pool) {
     element->flags |= POMELO_POOL_ELEMENT_ACQUIRED;
 
     // Call the callbacks
-    if (master_pool->zero_initialized) {
-        memset(data, 0, master_pool->element_size);
+    if (root->zero_init) {
+        memset(data, 0, root->element_size);
     }
 
-    pomelo_pool_callback acquire_callback = master_pool->acquire_callback;
-    if (acquire_callback) {
+    if (root->on_init) {
         // Call the callback
-        int ret = acquire_callback(data, callback_context);
+        int ret = root->on_init(data, init_data);
         if (ret < 0) {
             // Failed to acquire, return to pool
+            // Call the on_cleanup (if any)
+            if (root->on_cleanup) {
+                root->on_cleanup(data);
+            }
+
             pool->elements[pool->index++] = data;
             return NULL;
         }
@@ -518,16 +549,15 @@ void * pomelo_shared_pool_acquire(pomelo_shared_pool_t * pool) {
 }
 
 
-void pomelo_shared_pool_release(pomelo_shared_pool_t * pool, void * data) {
+void pomelo_pool_shared_release(pomelo_pool_shared_t * pool, void * data) {
     assert(pool != NULL);
     assert(data != NULL);
 
     pomelo_shared_pool_check_signature(pool);
 
-    pomelo_pool_t * master_pool = pool->master_pool;
+    pomelo_pool_root_t * root = pool->base.root;
     pomelo_pool_element_t * element = ((pomelo_pool_element_t *) data) - 1;
-
-    pomelo_pool_check_element_signature(master_pool, element);
+    pomelo_pool_check_element_signature(root, element);
 
     // Element acquired from root pool could be released to shared pool as well
     assert(element->flags & POMELO_POOL_ELEMENT_ACQUIRED);
@@ -538,7 +568,7 @@ void pomelo_shared_pool_release(pomelo_shared_pool_t * pool, void * data) {
     if (pool->index == pool->nelements) {
         // Release half of elements
         pomelo_pool_release_elements(
-            master_pool,
+            root,
             pool->buffers,
             pool->elements + pool->buffers
         );
@@ -546,9 +576,8 @@ void pomelo_shared_pool_release(pomelo_shared_pool_t * pool, void * data) {
         pool->index -= pool->buffers;
     }
 
-    pomelo_pool_callback release_callback = master_pool->release_callback;
-    if (release_callback) {
-        release_callback(data, master_pool->callback_context);
+    if (root->on_cleanup) {
+        root->on_cleanup(data);
     }
 
     // Remove the shared acquired flag
@@ -560,7 +589,7 @@ void pomelo_shared_pool_release(pomelo_shared_pool_t * pool, void * data) {
 
 
 void pomelo_pool_link_allocated(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     pomelo_pool_element_t ** elements,
     size_t nelements
 ) {
@@ -598,7 +627,7 @@ void pomelo_pool_link_allocated(
 
 
 void pomelo_pool_unlink_allocated(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     pomelo_pool_element_t ** elements,
     size_t nelements
 ) {
@@ -628,7 +657,7 @@ void pomelo_pool_unlink_allocated(
 
 
 void pomelo_pool_link_available(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     pomelo_pool_element_t ** elements,
     size_t nelements
 ) {
@@ -666,7 +695,7 @@ void pomelo_pool_link_available(
 
 
 void pomelo_pool_unlink_available(
-    pomelo_pool_t * pool,
+    pomelo_pool_root_t * pool,
     pomelo_pool_element_t ** elements,
     size_t nelements
 ) {

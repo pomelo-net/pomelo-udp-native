@@ -73,15 +73,188 @@ int pomelo_payload_read_buffer(
 );
 
 /// @brief Get the remain bytes of payload
-#define pomelo_payload_remain(payload) (payload->capacity - payload->position)
+#define pomelo_payload_remain(payload)                                         \
+    ((payload)->capacity - (payload)->position)
 
-/// @brief Pack the payload.
-/// This will make the "writing payload" becomes "reading payload"
-#define pomelo_payload_pack(payload)                                           \
-do {                                                                           \
-    (payload)->capacity = (payload)->position;                                 \
-    (payload)->position = 0;                                                   \
-} while (0)
+
+/* -------------------------------------------------------------------------- */
+/*                           Unsafe functions                                 */
+/* Following functions are unsafe, because they do not check the bounds of    */
+/* payload.                                                                   */
+/* -------------------------------------------------------------------------- */
+
+void pomelo_payload_write_uint8_unsafe(
+    pomelo_payload_t * payload,
+    uint8_t value
+);
+
+void pomelo_payload_write_uint16_unsafe(
+    pomelo_payload_t * payload,
+    uint16_t value
+);
+
+void pomelo_payload_write_uint32_unsafe(
+    pomelo_payload_t * payload,
+    uint32_t value
+);
+
+void pomelo_payload_write_uint64_unsafe(
+    pomelo_payload_t * payload,
+    uint64_t value
+);
+
+void pomelo_payload_write_int8_unsafe(
+    pomelo_payload_t * payload,
+    int8_t value
+);
+
+void pomelo_payload_write_int16_unsafe(
+    pomelo_payload_t * payload,
+    int16_t value
+);
+
+void pomelo_payload_write_int32_unsafe(
+    pomelo_payload_t * payload,
+    int32_t value
+);
+
+void pomelo_payload_write_int64_unsafe(
+    pomelo_payload_t * payload,
+    int64_t value
+);
+
+void pomelo_payload_write_float32_unsafe(
+    pomelo_payload_t * payload,
+    float value
+);
+
+void pomelo_payload_write_float64_unsafe(
+    pomelo_payload_t * payload,
+    double value
+);
+
+void pomelo_payload_write_buffer_unsafe(
+    pomelo_payload_t * payload,
+    const uint8_t * buffer,
+    size_t size
+);
+
+void pomelo_payload_zero_pad_unsafe(
+    pomelo_payload_t * payload,
+    size_t pad_size
+);
+
+void pomelo_payload_read_uint8_unsafe(
+    pomelo_payload_t * payload,
+    uint8_t * value
+);
+
+void pomelo_payload_read_uint16_unsafe(
+    pomelo_payload_t * payload,
+    uint16_t * value
+);
+
+void pomelo_payload_read_uint32_unsafe(
+    pomelo_payload_t * payload,
+    uint32_t * value
+);
+
+void pomelo_payload_read_uint64_unsafe(
+    pomelo_payload_t * payload,
+    uint64_t * value
+);
+
+void pomelo_payload_read_int8_unsafe(
+    pomelo_payload_t * payload,
+    int8_t * value
+);
+
+void pomelo_payload_read_int16_unsafe(
+    pomelo_payload_t * payload,
+    int16_t * value
+);
+
+void pomelo_payload_read_int32_unsafe(
+    pomelo_payload_t * payload,
+    int32_t * value
+);
+
+void pomelo_payload_read_int64_unsafe(
+    pomelo_payload_t * payload,
+    int64_t * value
+);
+
+void pomelo_payload_read_float32_unsafe(
+    pomelo_payload_t * payload,
+    float * value
+);
+
+void pomelo_payload_read_float64_unsafe(
+    pomelo_payload_t * payload,
+    double * value
+);
+
+void pomelo_payload_read_buffer_unsafe(
+    pomelo_payload_t * payload,
+    uint8_t * buffer,
+    size_t size
+);
+
+/* -------------------------------------------------------------------------- */
+/*                           Packed number APIs                               */
+/* -------------------------------------------------------------------------- */
+
+
+/// @brief Calculate the number of bytes required to write packed uint64 number
+/// @return The number of bytes required
+size_t pomelo_payload_calc_packed_uint64_bytes(uint64_t value);
+
+
+/// @brief Read packed uint64 value
+int pomelo_payload_read_packed_uint64(
+    pomelo_payload_t * payload,
+    size_t bytes,
+    uint64_t * value
+);
+
+
+/// @brief Read packed uint64 value without checking the payload
+void pomelo_payload_read_packed_uint64_unsafe(
+    pomelo_payload_t * payload,
+    size_t bytes,
+    uint64_t * value
+);
+
+
+/// @brief Write packed uint64 value
+int pomelo_payload_write_packed_uint64(
+    pomelo_payload_t * payload,
+    size_t bytes,
+    uint64_t value
+);
+
+
+/// @brief Write packed uint64 value without checking the payload
+void pomelo_payload_write_packed_uint64_unsafe(
+    pomelo_payload_t * payload,
+    size_t bytes,
+    uint64_t value
+);
+
+
+/// @brief Calculate the number of bytes required to write packed int64 number
+#define pomelo_payload_calc_packed_int64_bytes(value)                          \
+    pomelo_payload_calc_packed_uint64_bytes((uint64_t) value)
+
+
+/// @brief Read packed uint64 value without checking the payload
+#define pomelo_payload_read_packed_int64_unsafe(payload, bytes, value)         \
+    pomelo_payload_read_packed_uint64_unsafe(payload, bytes, (uint64_t *) value)
+
+
+/// @brief Write packed int64 value without checking the payload
+#define pomelo_payload_write_packed_int64_unsafe(payload, bytes, value)        \
+    pomelo_payload_write_packed_uint64_unsafe(payload, bytes, (uint64_t) value)
 
 
 #ifdef __cplusplus

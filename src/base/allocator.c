@@ -1,10 +1,8 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
-#include "pomelo/allocator.h"
-#ifdef POMELO_MULTI_THREAD
-#include "utils/atomic.h"
-#endif // POMELO_MULTI_THREAD
+#include "allocator.h"
+
 
 #ifndef NDEBUG // Debug mode
 
@@ -17,87 +15,12 @@ static int element_signature_generator = 0x76a51f;
 /// Check the signature of allocator in debug mode
 #define pomelo_allocator_check_signature(allocator) \
     assert(allocator->signature == POMELO_ALLOCATOR_SIGNATURE)
-
 #else // !NDEBUG
 
 /// Check the signature of allocator in release mode (No op)
-#define pomelo_allocator_check_signature(allocator) (void) allocator
+#define pomelo_allocator_check_signature(allocator)
 
 #endif // ~NDEBUG
-
-
-#ifdef POMELO_MULTI_THREAD
-typedef pomelo_atomic_uint64_t pomelo_allocator_allocated_bytes_t;
-
-#define pomelo_allocator_allocated_bytes_add(bytes, value) \
-    pomelo_atomic_uint64_fetch_add(&(bytes), value)
-
-#define pomelo_allocator_allocated_bytes_sub(bytes, value) \
-    pomelo_atomic_uint64_fetch_sub(&(bytes), value)
-
-#define pomelo_allocator_allocated_bytes_get(bytes) \
-    pomelo_atomic_uint64_load(&(bytes))
-
-#define pomelo_allocator_allocated_bytes_set(bytes, value) \
-    pomelo_atomic_uint64_store(&(bytes), value)
-
-
-#else // !POMELO_MULTI_THREAD
-typedef uint64_t pomelo_allocator_allocated_bytes_t;
-
-#define pomelo_allocator_allocated_bytes_add(bytes, value) (bytes) += (value)
-
-#define pomelo_allocator_allocated_bytes_sub(bytes, value) (bytes) -= (value)
-
-#define pomelo_allocator_allocated_bytes_get(bytes) (bytes)
-
-#define pomelo_allocator_allocated_bytes_set(bytes, value) (bytes) = (value)
-
-
-#endif // POMELO_MULTI_THREAD
-
-
-struct pomelo_allocator_s {
-    /// @brief The allocator context
-    void * context;
-
-    /// @brief The allocator malloc
-    pomelo_alloc_callback malloc;
-
-    /// @brief The allocator free
-    pomelo_free_callback free;
-
-    /// @brief Failure callback
-    pomelo_alloc_failure_callback failure_callback;
-
-    /// @brief Total in-use bytes of data
-    pomelo_allocator_allocated_bytes_t allocated_bytes;
-
-#ifndef NDEBUG
-    /// @brief The signature of allocator
-    int signature;
-
-    /// @brief The signature of all memory blocks created by this allocator
-    int element_signature;
-#endif
-
-};
-
-struct pomelo_allocator_header_s;
-
-/// @brief The header for allocator
-typedef struct pomelo_allocator_header_s pomelo_allocator_header_t;
-
-
-struct pomelo_allocator_header_s {
-    /// @brief The size of memory
-    size_t size;
-
-#ifndef NDEBUG
-    /// @brief The signature of memory block
-    int signature;
-#endif
-};
 
 
 /// The default allocator
@@ -113,7 +36,7 @@ static void pomelo_allocator_init(pomelo_allocator_t * allocator) {
     allocator->signature = POMELO_ALLOCATOR_SIGNATURE;
 #endif
 
-    pomelo_allocator_allocated_bytes_set(allocator->allocated_bytes, 0);
+    pomelo_atomic_uint64_store(&allocator->allocated_bytes, 0);
 }
 
 
@@ -166,8 +89,8 @@ void * pomelo_allocator_malloc(pomelo_allocator_t * allocator, size_t size) {
 #endif
 
     // For statistic
-    pomelo_allocator_allocated_bytes_add(
-        allocator->allocated_bytes,
+    pomelo_atomic_uint64_fetch_add(
+        &allocator->allocated_bytes,
         (uint64_t) size
     );
 
@@ -189,8 +112,8 @@ void pomelo_allocator_free(pomelo_allocator_t * allocator, void * mem) {
 #endif
 
     // For statistic
-    pomelo_allocator_allocated_bytes_sub(
-        allocator->allocated_bytes,
+    pomelo_atomic_uint64_fetch_sub(
+        &allocator->allocated_bytes,
         (uint64_t) header->size
     );
 
@@ -205,7 +128,7 @@ void pomelo_allocator_free(pomelo_allocator_t * allocator, void * mem) {
 
 uint64_t pomelo_allocator_allocated_bytes(pomelo_allocator_t * allocator) {
     assert(allocator != NULL);
-    return pomelo_allocator_allocated_bytes_get(allocator->allocated_bytes);
+    return pomelo_atomic_uint64_load(&allocator->allocated_bytes);
 }
 
 
@@ -256,4 +179,16 @@ void pomelo_allocator_set_failure_callback(
 ) {
     assert(allocator != NULL);
     allocator->failure_callback = callback;
+}
+
+
+void pomelo_allocator_statistic(
+    pomelo_allocator_t * allocator,
+    pomelo_statistic_allocator_t * statistic
+) {
+    assert(allocator != NULL);
+    assert(statistic != NULL);
+
+    statistic->allocated_bytes =
+        pomelo_atomic_uint64_load(&allocator->allocated_bytes);
 }

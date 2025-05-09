@@ -8,18 +8,6 @@
 #include "context.h"
 #include "channel.h"
 
-#ifdef POMELO_MULTI_THREAD
-#define pomelo_session_signature_set(signature, value) \
-    pomelo_atomic_uint64_store(&(signature), value)
-#define pomelo_session_signature_get(signature)        \
-    pomelo_atomic_uint64_load(&(signature))
-
-#else // !POMELO_MULTI_THREAD
-#define pomelo_session_signature_set(signature, value) (signature) = value
-#define pomelo_session_signature_get(signature) signature
-
-#endif // POMELO_MULTI_THREAD
-
 
 /* -------------------------------------------------------------------------- */
 /*                               Public APIs                                  */
@@ -50,35 +38,38 @@ pomelo_address_t * pomelo_session_get_address(pomelo_session_t * session) {
 }
 
 
-int pomelo_session_send(
+void pomelo_session_send(
     pomelo_session_t * session,
     size_t channel_index,
-    pomelo_message_t * message
+    pomelo_message_t * message,
+    void * data
 ) {
     assert(session != NULL);
     assert(message != NULL);
 
+    // Prepare the message for sending
+    pomelo_message_prepare_send(message, data);
+
     uint64_t signature = pomelo_session_get_signature(session);
     if (signature == 0) {
-        // Session has been released
-        return POMELO_ERR_SESSION_INVALID;
+        pomelo_socket_dispatch_send_result(session->socket, message);
+        return; // Session has been released
     }
 
     // Get the channel
     pomelo_channel_t * channel =
         pomelo_session_get_channel(session, channel_index);
-    if (!channel) {
-        return POMELO_ERR_CHANNEL_INVALID;
-    }
+    if (!channel) return; // Invalid channel
 
     // And send through it
-    return pomelo_channel_send(channel, message);
+    assert(channel->methods != NULL && channel->methods->send != NULL);
+    channel->methods->send(channel, message);
 }
 
 
 uint64_t pomelo_session_get_signature(pomelo_session_t * session) {
     assert(session != NULL);
-    return pomelo_session_signature_get(session->signature);
+    return pomelo_atomic_uint64_load(&session->signature);
 }
 
 
@@ -90,14 +81,13 @@ pomelo_socket_t * pomelo_session_get_socket(pomelo_session_t * session) {
 
 int pomelo_session_disconnect(pomelo_session_t * session) {
     assert(session != NULL);
-    pomelo_session_methods_t * methods = session->methods;
-    if (!methods) {
-        // Invalid session
-        return POMELO_ERR_SESSION_INVALID;
-    }
+    pomelo_sequencer_submit(
+        &session->socket->sequencer,
+        &session->disconnect_task
+    );
 
-    assert(methods->disconnect != NULL);
-    return methods->disconnect(session);
+    // => pomelo_session_disconnect_deferred()
+    return 0;
 }
 
 
@@ -122,11 +112,7 @@ pomelo_channel_t * pomelo_session_get_channel(
 ) {
     assert(session != NULL);
     pomelo_session_methods_t * methods = session->methods;
-    if (!methods) {
-        // Invalid session
-        return NULL;
-    }
-
+    if (!methods) return NULL; // Invalid session
     assert(methods->get_channel != NULL);
     return methods->get_channel(session, channel_index);
 }
@@ -167,33 +153,74 @@ pomelo_channel_mode pomelo_session_get_channel_mode(
 /*                               Private APIs                                 */
 /* -------------------------------------------------------------------------- */
 
-int pomelo_session_init(pomelo_session_t * session, pomelo_socket_t * socket) {
+
+int pomelo_session_on_alloc(
+    pomelo_session_t * session,
+    pomelo_context_t * context
+) {
     assert(session != NULL);
-    assert(socket != NULL);
     memset(session, 0, sizeof(pomelo_session_t));
-
-    session->socket = socket;
-    pomelo_extra_set(session->extra, NULL);
-
-    // Update the signature
-    uint64_t signature = ++socket->session_signature_generator;
-    pomelo_session_signature_set(session->signature, signature);
+    session->context = context;
     return 0;
 }
 
 
-/// @brief FInalize base session
-int pomelo_session_finalize(
+void pomelo_session_on_free(pomelo_session_t * session) {
+    (void) session; // Nothing to do
+}
+
+
+int pomelo_session_init(
     pomelo_session_t * session,
-    pomelo_socket_t * socket
+    pomelo_session_info_t * info
 ) {
     assert(session != NULL);
-    (void) socket;
+    assert(info != NULL);
+
+    pomelo_extra_set(session->extra, NULL);
+    session->type = info->type;
+    session->socket = info->socket;
+    session->client_id = 0;
+    memset(&session->address, 0, sizeof(pomelo_address_t));
+
+    // Update the signature
+    uint64_t signature = ++info->socket->session_signature_generator;
+    pomelo_atomic_uint64_store(&session->signature, signature);
+
+    session->methods = info->methods;
+    session->entry = NULL;
+    session->state = POMELO_SESSION_STATE_DISCONNECTED;
+
+    // Initialize the disconnect task
+    pomelo_sequencer_task_init(
+        &session->disconnect_task,
+        (pomelo_sequencer_callback) pomelo_session_disconnect_deferred,
+        session
+    );
+
+    return 0;
+}
+
+
+void pomelo_session_cleanup(pomelo_session_t * session) {
+    assert(session != NULL);
+
+    // Call the cleanup callback
+    pomelo_session_on_cleanup(session);
 
     session->socket = NULL;
     session->methods = NULL;
 
     // Reset the session signature to avoid sending
-    pomelo_session_signature_set(session->signature, 0);
-    return 0;
+    pomelo_atomic_uint64_store(&session->signature, 0);
+}
+
+
+void pomelo_session_disconnect_deferred(pomelo_session_t * session) {
+    assert(session != NULL);
+    pomelo_session_methods_t * methods = session->methods;
+    if (!methods) return; // Invalid session
+
+    assert(methods->disconnect != NULL);
+    methods->disconnect(session);
 }

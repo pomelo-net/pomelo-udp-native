@@ -1,6 +1,8 @@
 #ifndef POMELO_EXAMPLE_SHARED_H
 #define POMELO_EXAMPLE_SHARED_H
 #include "pomelo.h"
+#include "pomelo/random.h"
+#include "pomelo/base64.h"
 #include "pomelo/platforms/platform-uv.h"
 
 #ifdef __cplusplus
@@ -22,6 +24,9 @@ extern "C" {
 
 #define ADDRESS_HOST "127.0.0.1"
 #define ADDRESS_PORT 8888
+
+#define SERVICE_HOST "127.0.0.1"
+#define SERVICE_PORT 8889
 
 
 /// @brief Environment of example

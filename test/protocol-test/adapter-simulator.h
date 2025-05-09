@@ -8,7 +8,7 @@ extern "C" {
 
 typedef void (*pomelo_adapter_simulator_send_handler)(
     pomelo_address_t * address,
-    pomelo_packet_t * packet
+    pomelo_buffer_view_t * view
 );
 
 
@@ -28,7 +28,7 @@ struct pomelo_adapter_s {
 void pomelo_adapter_recv(
     pomelo_adapter_t * adapter,
     pomelo_address_t * address,
-    pomelo_packet_t * packet
+    pomelo_buffer_view_t * view
 );
 
 

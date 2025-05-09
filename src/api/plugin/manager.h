@@ -35,13 +35,6 @@ struct pomelo_plugin_manager_s {
 /*                                Public APIs                                 */
 /* -------------------------------------------------------------------------- */
 
-
-/// @brief Initialize creating options of plugin manager
-void pomelo_plugin_manager_options_init(
-    pomelo_plugin_manager_options_t * options
-);
-
-
 /// @brief Create new plugin manager
 pomelo_plugin_manager_t * pomelo_plugin_manager_create(
     pomelo_plugin_manager_options_t * options

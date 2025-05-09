@@ -5,9 +5,7 @@
 #include "protocol/protocol.h"
 #include "base/extra.h"
 #include "utils/list.h"
-#ifdef POMELO_MULTI_THREAD
 #include "utils/atomic.h"
-#endif // POMELO_MULTI_THREAD
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,6 +14,10 @@ extern "C" {
 
 /// @brief Session methods table
 typedef struct pomelo_session_methods_s pomelo_session_methods_t;
+
+
+/// @brief Session info
+typedef struct pomelo_session_info_s pomelo_session_info_t;
 
 
 /// @brief Disconnecting function of session
@@ -37,14 +39,27 @@ typedef pomelo_channel_t * (*pomelo_session_get_channel_fn)(
 );
 
 
-/// @brief Release session
-typedef void (*pomelo_session_release_fn)(pomelo_session_t * session);
+/// @brief The state of session
+typedef enum pomelo_session_state {
+    /// @brief The session is connected
+    POMELO_SESSION_STATE_CONNECTED,
 
-#ifdef POMELO_MULTI_THREAD
-typedef pomelo_atomic_uint64_t pomelo_session_signature_t;
-#else // !POMELO_MULTI_THREAD
-typedef uint64_t pomelo_session_signature_t;
-#endif // POMELO_MULTI_THREAD
+    /// @brief The session is connecting
+    POMELO_SESSION_STATE_CONNECTING,
+
+    /// @brief The session is disconnected
+    POMELO_SESSION_STATE_DISCONNECTED
+} pomelo_session_state;
+
+
+typedef enum pomelo_session_type {
+    /// @brief The session is a builtin session
+    POMELO_SESSION_TYPE_BUILTIN,
+
+    /// @brief The session is a plugin session
+    POMELO_SESSION_TYPE_PLUGIN
+} pomelo_session_type;
+
 
 struct pomelo_session_methods_s {
     /// @brief Disconnecting method
@@ -55,13 +70,28 @@ struct pomelo_session_methods_s {
 
     /// @brief Getting channel method
     pomelo_session_get_channel_fn get_channel;
+};
 
-    /// @brief Release session method
-    pomelo_session_release_fn release;
+
+struct pomelo_session_info_s {
+    /// @brief The type of session
+    pomelo_session_type type;
+
+    /// @brief The socket
+    pomelo_socket_t * socket;
+
+    /// @brief The methods
+    pomelo_session_methods_t * methods;
 };
 
 
 struct pomelo_session_s {
+    /// @brief The context
+    pomelo_context_t * context;
+
+    /// @brief The type of session
+    pomelo_session_type type;
+
     /// @brief The extra data of session
     pomelo_extra_t extra;
 
@@ -75,23 +105,60 @@ struct pomelo_session_s {
     pomelo_address_t address;
 
     /// @brief The signature of session.
-    pomelo_session_signature_t signature;
+    pomelo_atomic_uint64_t signature;
 
     /// @brief Methods table of session
     pomelo_session_methods_t * methods;
 
-    /// @brief Node of session in list
-    pomelo_list_node_t * node;
+    /// @brief Entry of session in list
+    pomelo_list_entry_t * entry;
+
+    /// @brief The state of session
+    pomelo_session_state state;
+
+    /// @brief The disconnecting task
+    pomelo_sequencer_task_t disconnect_task;
+
+    /* Some temporary data */
+
+    /// @brief The original index of session (For sending batch messages)
+    size_t tmp_original_index;
 };
 
-/// @brief Initialize base session
-int pomelo_session_init(pomelo_session_t * session, pomelo_socket_t * socket);
 
-/// @brief FInalize base session
-int pomelo_session_finalize(
+struct pomelo_session_disconnect_request_s {
+    /// @brief The context
+    pomelo_context_t * context;
+
+    /// @brief The session
+    pomelo_session_t * session;
+};
+
+
+/// @brief On allocate callback
+int pomelo_session_on_alloc(
     pomelo_session_t * session,
-    pomelo_socket_t * socket
+    pomelo_context_t * context
 );
+
+
+/// @brief On free callback
+void pomelo_session_on_free(pomelo_session_t * session);
+
+
+/// @brief Initialize base session
+int pomelo_session_init(
+    pomelo_session_t * session,
+    pomelo_session_info_t * info
+);
+
+
+/// @brief Cleanup base session
+void pomelo_session_cleanup(pomelo_session_t * session);
+
+
+/// @brief The deferred disconnect function
+void pomelo_session_disconnect_deferred(pomelo_session_t * session);
 
 
 #ifdef __cplusplus

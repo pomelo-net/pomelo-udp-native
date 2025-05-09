@@ -1,7 +1,10 @@
 #include <assert.h>
+#include <string.h>
 #include "pomelo/errno.h"
 #include "channel.h"
-
+#include "message.h"
+#include "session.h"
+#include "socket.h"
 
 /* -------------------------------------------------------------------------- */
 /*                               Public APIs                                  */
@@ -20,21 +23,19 @@ void * pomelo_channel_get_extra(pomelo_channel_t * channel) {
 }
 
 
-int pomelo_channel_send(
+void pomelo_channel_send(
     pomelo_channel_t * channel,
-    pomelo_message_t * message
+    pomelo_message_t * message,
+    void * data
 ) {
     assert(channel != NULL);
     assert(message != NULL);
 
-    pomelo_channel_methods_t * methods = channel->methods;
-    if (!methods) {
-        // Invalid channel
-        return POMELO_ERR_CHANNEL_INVALID;
-    }
+    // Prepare the message for sending
+    pomelo_message_prepare_send(message, data);
 
-    assert(methods->send != NULL);
-    return methods->send(channel, message);
+    assert(channel->methods != NULL && channel->methods->send != NULL);
+    channel->methods->send(channel, message);
 }
 
 
@@ -79,25 +80,23 @@ pomelo_session_t * pomelo_channel_get_session(pomelo_channel_t * channel) {
 
 int pomelo_channel_init(
     pomelo_channel_t * channel,
-    pomelo_session_t * session
+    pomelo_channel_info_t * info
 ) {
     assert(channel != NULL);
-    assert(session != NULL);
+    assert(info != NULL);
 
-    channel->session = session;
+    channel->session = info->session;
+    channel->methods = info->methods;
     pomelo_extra_set(channel->extra, NULL);
     return 0;
 }
 
 
-int pomelo_channel_finalize(
-    pomelo_channel_t * channel,
-    pomelo_session_t * session
-) {
+void pomelo_channel_cleanup(pomelo_channel_t * channel) {
     assert(channel != NULL);
-    (void) session;
+    // Call the cleanup callback
+    pomelo_channel_on_cleanup(channel);
 
     channel->session = NULL;
     channel->methods = NULL;
-    return 0;
 }

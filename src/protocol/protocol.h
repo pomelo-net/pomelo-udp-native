@@ -3,10 +3,10 @@
 #include "pomelo/allocator.h"
 #include "pomelo/address.h"
 #include "pomelo/statistic/statistic-protocol.h"
-#include "base/packet.h"
-#include "base/buffer.h"
 #include "platform/platform.h"
-
+#include "adapter/adapter.h"
+#include "base/buffer.h"
+#include "base/sequencer.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,28 +14,19 @@ extern "C" {
 
 /// @brief Connect result
 typedef enum pomelo_protocol_connect_result_e {
+    /// @brief The connection has timed out
     POMELO_PROTOCOL_SOCKET_CONNECT_TIMED_OUT = -2,
+
+    /// @brief The connection has been denied
     POMELO_PROTOCOL_SOCKET_CONNECT_DENIED = -1,
+
+    /// @brief The connection has been successfully established
     POMELO_PROTOCOL_SOCKET_CONNECT_SUCCESS = 0
 } pomelo_protocol_connect_result;
 
 
-/// @brief The interface of protocol context
+/// @brief The protocol context
 typedef struct pomelo_protocol_context_s pomelo_protocol_context_t;
-
-/// @brief The context for protocol
-typedef struct pomelo_protocol_context_root_s pomelo_protocol_context_root_t;
-
-#ifdef POMELO_MULTI_THREAD
-
-/// @brief Shared context for a local thread
-typedef struct pomelo_protocol_context_shared_s
-    pomelo_protocol_context_shared_t;
-
-typedef struct pomelo_protocol_context_shared_options_s
-    pomelo_protocol_context_shared_options_t;
-
-#endif // !POMELO_MULTI_THREAD
 
 /// @brief The socket
 typedef struct pomelo_protocol_socket_s pomelo_protocol_socket_t;
@@ -52,8 +43,8 @@ typedef struct pomelo_protocol_server_s pomelo_protocol_server_t;
 typedef struct pomelo_protocol_peer_s pomelo_protocol_peer_t;
 
 /// @brief The protocol context creating options
-typedef struct pomelo_protocol_context_root_options_s
-    pomelo_protocol_context_root_options_t;
+typedef struct pomelo_protocol_context_options_s
+    pomelo_protocol_context_options_t;
 
 /// @brief The socket server creating options
 typedef struct pomelo_protocol_server_options_s
@@ -63,51 +54,48 @@ typedef struct pomelo_protocol_server_options_s
 typedef struct pomelo_protocol_client_options_s
     pomelo_protocol_client_options_t;
 
+/// @brief The sender
+typedef struct pomelo_protocol_sender_s pomelo_protocol_sender_t;
 
-struct pomelo_protocol_context_root_options_s {
+/// @brief The receiver
+typedef struct pomelo_protocol_receiver_s pomelo_protocol_receiver_t;
+
+/// The crypto context
+typedef struct pomelo_protocol_crypto_context_s
+    pomelo_protocol_crypto_context_t;
+
+/// @brief The packet header
+typedef struct pomelo_protocol_packet_header_s pomelo_protocol_packet_header_t;
+
+/// @brief The statistic information of socket
+typedef struct pomelo_protocol_socket_statistic_s
+    pomelo_protocol_socket_statistic_t;
+
+
+struct pomelo_protocol_context_options_s {
     /// @brief The allocator
     pomelo_allocator_t * allocator;
 
-    /// @brief The buffer context
-    pomelo_buffer_context_root_t * buffer_context;
-
-    /// @brief The whole capacity of a packet
-    size_t packet_capacity;
-};
-
-
-struct pomelo_protocol_context_s {
     /// @brief The buffer context
     pomelo_buffer_context_t * buffer_context;
 
-    /// @brief The whole capacity of a packet
-    size_t packet_capacity;
-
-    /// @brief Maximum size of packet payload body.
-    /// packet_payload_body_capacity = (packet_capacity - header_size)
-    size_t packet_payload_body_capacity;
-};
-
-
-struct pomelo_protocol_context_shared_options_s {
-    /// @brief The allocator
-    pomelo_allocator_t * allocator;
-
-    /// @brief The root context
-    pomelo_protocol_context_root_t * context;
+    /// @brief Capacity of payload
+    size_t payload_capacity;
 };
 
 
 struct pomelo_protocol_server_options_s {
-    /// @brief The allocator to be used in system.
-    /// If NULL is set, socket will use the default allocator
-    pomelo_allocator_t * allocator;
-
     /// @brief The platform which this socket relies on
     pomelo_platform_t * platform;
 
+    /// @brief The adapter
+    pomelo_adapter_t * adapter;
+
     /// @brief The protocol context
     pomelo_protocol_context_t * context;
+
+    /// @brief The sequencer of client
+    pomelo_sequencer_t * sequencer;
 
     /// @brief The maximum number of sessions
     size_t max_clients;
@@ -124,18 +112,29 @@ struct pomelo_protocol_server_options_s {
 
 
 struct pomelo_protocol_client_options_s {
-    /// @brief The allocator to be used in system.
-    /// If NULL is set, socket will use the default allocator
-    pomelo_allocator_t * allocator;
-
     /// @brief The platform which this socket relies on
     pomelo_platform_t * platform;
+
+    /// @brief The adapter
+    pomelo_adapter_t * adapter;
 
     /// @brief The protocol context
     pomelo_protocol_context_t * context;
 
+    /// @brief The sequencer of client
+    pomelo_sequencer_t * sequencer;
+
     /// @brief The connect token
     uint8_t * connect_token;
+};
+
+
+struct pomelo_protocol_socket_statistic_s {
+    /// @brief The number of bytes of all valid packets
+    uint64_t valid_recv_bytes;
+
+    /// @brief The number of bytes of all invalid packets
+    uint64_t invalid_recv_bytes;
 };
 
 
@@ -143,71 +142,29 @@ struct pomelo_protocol_client_options_s {
 /*                               Context APIs                                 */
 /* -------------------------------------------------------------------------- */
 
-/// @brief Set the default options
-/// @param options The options
-/// @return 0 on success, or an error code < 0 on failure. 
-int pomelo_protocol_context_root_options_init(
-    pomelo_protocol_context_root_options_t * options
-);
-
-
 /// @brief Create new protocol context
 /// @param options The creating options
 /// @return New protocol context or NULl on failure
-pomelo_protocol_context_root_t * pomelo_protocol_context_root_create(
-    pomelo_protocol_context_root_options_t * options
+pomelo_protocol_context_t * pomelo_protocol_context_create(
+    pomelo_protocol_context_options_t * options
 );
 
 
-/// @brief Destroy an unused protocol context
+/// @brief Destroy aprotocol context
 /// @param context The context to destroy
-void pomelo_protocol_context_root_destroy(
-    pomelo_protocol_context_root_t * context
+void pomelo_protocol_context_destroy(pomelo_protocol_context_t * context);
+
+
+/// @brief Get the statistic of protocol context
+void pomelo_protocol_context_statistic(
+    pomelo_protocol_context_t * context,
+    pomelo_statistic_protocol_t * statistic
 );
-
-
-/* -------------------------------------------------------------------------- */
-/*                             Shared Context APIs                            */
-/* -------------------------------------------------------------------------- */
-
-#ifdef POMELO_MULTI_THREAD
-
-/// @brief Initialize the creating options for local-thread protocol context
-int pomelo_protocol_context_shared_options_init(
-    pomelo_protocol_context_shared_options_t * options
-);
-
-/// @brief Create local thread context
-pomelo_protocol_context_shared_t * pomelo_protocol_context_shared_create(
-    pomelo_protocol_context_shared_options_t * options
-);
-
-/// @brief Destroy the local thread
-void pomelo_protocol_context_shared_destroy(
-    pomelo_protocol_context_shared_t * context
-);
-
-#endif // !POMELO_MULTI_THREAD
 
 
 /* -------------------------------------------------------------------------- */
 /*                                Socket APIs                                 */
 /* -------------------------------------------------------------------------- */
-
-/// @brief Set the default options
-/// @param options The options
-/// @return 0 on success, or an error code < 0 on failure. 
-int pomelo_protocol_server_options_init(
-    pomelo_protocol_server_options_t * options
-);
-
-
-/// @brief Set the default options
-/// @param options The options
-/// @return 0 on success, or an error code < 0 on failure. 
-int pomelo_protocol_client_options_init(
-    pomelo_protocol_client_options_t * options
-);
 
 
 /// @brief Create new socket server
@@ -241,30 +198,26 @@ int pomelo_protocol_socket_start(pomelo_protocol_socket_t * socket);
 
 /// @brief Stop listening or connecting.
 /// The socket will take a while to completely stop working.
-/// Then, the callback pomelo_protocol_on_socket_stopped will be called.
 /// @param socket The socket
 /// @return 0 on success, or an error code < 0 on failure. 
 void pomelo_protocol_socket_stop(pomelo_protocol_socket_t * socket);
 
 
 /// @brief Get the socket extra data
-#define pomelo_protocol_socket_get_extra(socket) (*((void **) (socket)))
+void * pomelo_protocol_socket_get_extra(pomelo_protocol_socket_t * socket);
 
 
 /// @brief Set the socket data for socket
-#define pomelo_protocol_socket_set_extra(socket, data)                         \
-    (*((void **) (socket)) = (data))
-
-
-/// @brief Get the statistic of socket protocol
-void pomelo_protocol_socket_statistic(
+void pomelo_protocol_socket_set_extra(
     pomelo_protocol_socket_t * socket,
-    pomelo_statistic_protocol_t * statistic
+    void * data
 );
 
 
-/// @brief Get the socket synchronized time
-uint64_t pomelo_protocol_socket_time(pomelo_protocol_socket_t * socket);
+/// @brief Get the statistic of socket
+pomelo_protocol_socket_statistic_t * pomelo_protocol_socket_statistic(
+    pomelo_protocol_socket_t * socket
+);
 
 
 /* -------------------------------------------------------------------------- */
@@ -282,39 +235,29 @@ pomelo_address_t * pomelo_protocol_peer_get_address(
 );
 
 
-/// @brief Send payload.
-/// The payload will be encrypted (if it has not), so that, the content will be
-/// changed.
-/// Do not modify the payload after calling this function.
+/// @brief Send a payload.
 /// @param peer The target peer
-/// @param buffer The buffer to send
-/// @param offset Offset of buffer to send
-/// @param length Length of data
+/// @param views The views of buffer
+/// @param nviews The number of views
 int pomelo_protocol_peer_send(
     pomelo_protocol_peer_t * peer,
-    pomelo_buffer_t * buffer,
-    size_t offset,
-    size_t length
+    pomelo_buffer_view_t * views,
+    size_t nviews
 );
 
 
 /// @brief Get the peer extra data
-#define pomelo_protocol_peer_get_extra(peer) (*((void **) (peer)))
+void * pomelo_protocol_peer_get_extra(pomelo_protocol_peer_t * peer);
+
 
 /// @brief Set the extra data for peer
-#define pomelo_protocol_peer_set_extra(peer, data)                             \
-    (*((void **) (peer)) = (data))
+void pomelo_protocol_peer_set_extra(pomelo_protocol_peer_t * peer, void * data);
+
 
 /// @brief Disconnect a peer.
 /// If this is the peer of client, client will be stopped.
 int pomelo_protocol_peer_disconnect(pomelo_protocol_peer_t * peer);
 
-/// @brief Get round trip time of peer
-int pomelo_protocol_peer_rtt(
-    pomelo_protocol_peer_t * peer,
-    uint64_t * mean,
-    uint64_t * variance
-);
 
 /* -------------------------------------------------------------------------- */
 /*                          External linkage APIs                             */
@@ -345,15 +288,8 @@ void pomelo_protocol_socket_on_disconnected(
 void pomelo_protocol_socket_on_received(
     pomelo_protocol_socket_t * socket,
     pomelo_protocol_peer_t * peer,
-    pomelo_buffer_t * buffer,
-    size_t offset,
-    size_t length
+    pomelo_buffer_view_t * view
 );
-
-
-/// @brief The callback when socket has completely stopped.
-/// @param socket The socket
-void pomelo_protocol_socket_on_stopped(pomelo_protocol_socket_t * socket);
 
 
 /// @brief The callback with the result of connection request.
