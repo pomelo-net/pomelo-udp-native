@@ -1,2 +1,0 @@
-# TODO
-- [ ] Network throttle controlling

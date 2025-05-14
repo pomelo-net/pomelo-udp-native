@@ -110,5 +110,6 @@ set(SRC_SODIUM
 
 # Sodium
 add_library(sodium STATIC ${SRC_SODIUM})
-target_include_directories(sodium PUBLIC ${INCLUDE_SODIUM})
-target_compile_definitions(sodium PUBLIC SODIUM_STATIC=1 DEV_MODE=0 CONFIGURED=1)
+target_include_directories(sodium PRIVATE ${INCLUDE_SODIUM})
+set(LIB_SODIUM_DEFINES SODIUM_STATIC=1 DEV_MODE=0 CONFIGURED=1)
+target_compile_definitions(sodium PUBLIC ${LIB_SODIUM_DEFINES})

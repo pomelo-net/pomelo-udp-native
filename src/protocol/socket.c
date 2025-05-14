@@ -596,8 +596,9 @@ int pomelo_protocol_socket_validate_packet(
             );
 
         default:
-            return 0;
+            break;
     }
+
     return 0;
 }
 

@@ -44,6 +44,7 @@ set(LIB_SODIUM_INCLUDE
     ${LIB_SODIUM_SRC_PATH}/include
     ${LIB_SODIUM_SRC_PATH}/include/sodium
 )
+set(LIB_SODIUM_DEFINES SODIUM_STATIC=1 DEV_MODE=0 CONFIGURED=1)
 add_subdirectory(${LIB_SODIUM_PATH})
 
 
@@ -272,6 +273,7 @@ add_library(${POMELO_CRYPTO} STATIC ${SRC_CRYPTO})
 target_compile_definitions(${POMELO_CRYPTO} PRIVATE ${POMELO_COMPILE_DEFINES})
 target_include_directories(${POMELO_CRYPTO} PRIVATE ${POMELO_INCLUDE} ${LIB_SODIUM_INCLUDE})
 target_compile_options(${POMELO_CRYPTO} PRIVATE ${POMELO_COMPILE_FLAGS})
+target_compile_definitions(${POMELO_CRYPTO} PUBLIC ${LIB_SODIUM_DEFINES})
 
 
 # Utils
@@ -296,6 +298,12 @@ target_include_directories(${POMELO_PLATFORM_UV}
 )
 target_compile_definitions(${POMELO_PLATFORM_UV} PRIVATE ${POMELO_COMPILE_DEFINES})
 target_compile_options(${POMELO_PLATFORM_UV} PRIVATE ${POMELO_COMPILE_FLAGS})
+if (WIN32)
+    target_compile_definitions(${POMELO_PLATFORM_UV} PRIVATE
+        WIN32_LEAN_AND_MEAN
+        _WIN32_WINNT=0x0602 # Windows 8
+    )
+endif()
 
 
 # API
@@ -308,7 +316,7 @@ target_compile_options(${POMELO_API} PRIVATE ${POMELO_COMPILE_FLAGS})
 # Generator
 if (POMELO_BUILD_GENERATOR)
     add_executable(${POMELO_GENERATOR} ${SRC_GENERATOR})
-    target_include_directories(${POMELO_GENERATOR} PRIVATE ${POMELO_INCLUDE})
+    target_include_directories(${POMELO_GENERATOR} PRIVATE ${POMELO_INCLUDE} ${LIB_SODIUM_INCLUDE})
     target_compile_definitions(${POMELO_GENERATOR} PRIVATE ${POMELO_COMPILE_DEFINES})
     target_link_libraries(${POMELO_GENERATOR} PRIVATE
         ${POMELO_BASE}
@@ -318,6 +326,7 @@ if (POMELO_BUILD_GENERATOR)
         ${LIB_SODIUM}
     )
     target_compile_options(${POMELO_GENERATOR} PRIVATE ${POMELO_COMPILE_FLAGS})
+    target_compile_definitions(${POMELO_GENERATOR} PUBLIC ${LIB_SODIUM_DEFINES})
 endif()
 
 
@@ -366,8 +375,8 @@ if (POMELO_BUILD_TESTS)
     target_link_libraries(${POMELO_TEST_BASE} PRIVATE
         ${POMELO_BASE}
         ${POMELO_UTILS}
-        ${POMELO_PLATFORM_UV}
         ${POMELO_CRYPTO}
+        ${LIB_UV}
     )
     target_compile_options(${POMELO_TEST_BASE} PRIVATE ${POMELO_COMPILE_FLAGS})
 

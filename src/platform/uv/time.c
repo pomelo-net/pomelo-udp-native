@@ -1,12 +1,10 @@
-#include "uv.h"
-#include "platform/platform.h"
-
 #ifdef _WIN32
 #include <Windows.h>
 #else
 #include <time.h>
 #endif
-
+#include "uv.h"
+#include "platform/platform.h"
 
 uint64_t pomelo_platform_hrtime(pomelo_platform_t * platform) {
     (void) (platform);
