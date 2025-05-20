@@ -57,13 +57,13 @@ struct pomelo_connect_token_s {
 int pomelo_connect_token_encode(
     uint8_t * buffer,
     pomelo_connect_token_t * token,
-    uint8_t * key
+    const uint8_t * key
 );
 
 
 /// @brief Decode the connect token information from connect token
 int pomelo_connect_token_decode_public(
-    uint8_t * buffer,
+    const uint8_t * buffer,
     pomelo_connect_token_t * token
 );
 
@@ -75,9 +75,9 @@ int pomelo_connect_token_decode_public(
 /// @param key The key for decrypting
 /// @return 0 on success or an error code < 0 on failure
 int pomelo_connect_token_decode_private(
-    uint8_t * buffer,
+    const uint8_t * buffer,
     pomelo_connect_token_t * token,
-    uint8_t * key
+    const uint8_t * key
 );
 
 

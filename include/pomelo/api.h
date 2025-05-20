@@ -208,7 +208,10 @@ void * pomelo_socket_get_extra(pomelo_socket_t * socket);
 /// @param socket The socket
 /// @param connect_token The connect token
 /// @return Returns 0 on success or -1 on failure
-int pomelo_socket_connect(pomelo_socket_t * socket, uint8_t * connect_token);
+int pomelo_socket_connect(
+    pomelo_socket_t * socket,
+    const uint8_t * connect_token
+);
 
 
 /// @brief Start the socket as server and listen to connections
@@ -219,7 +222,7 @@ int pomelo_socket_connect(pomelo_socket_t * socket, uint8_t * connect_token);
 /// @param address The bind address
 int pomelo_socket_listen(
     pomelo_socket_t * socket,
-    uint8_t * private_key,
+    const uint8_t * private_key,
     uint64_t protocol_id,
     size_t max_clients,
     pomelo_address_t * address

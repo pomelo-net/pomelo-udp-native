@@ -104,7 +104,7 @@ struct pomelo_protocol_server_options_s {
     int64_t protocol_id;
 
     /// @brief The private key
-    uint8_t * private_key;
+    const uint8_t * private_key;
 
     /// @brief The bind address of socket
     pomelo_address_t address;
@@ -125,7 +125,7 @@ struct pomelo_protocol_client_options_s {
     pomelo_sequencer_t * sequencer;
 
     /// @brief The connect token
-    uint8_t * connect_token;
+    const uint8_t * connect_token;
 };
 
 

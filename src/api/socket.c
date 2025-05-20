@@ -194,7 +194,10 @@ void * pomelo_socket_get_extra(pomelo_socket_t * socket) {
 }
 
 
-int pomelo_socket_connect(pomelo_socket_t * socket, uint8_t * connect_token) {
+int pomelo_socket_connect(
+    pomelo_socket_t * socket,
+    const uint8_t * connect_token
+) {
     assert(socket != NULL);
     assert(connect_token != NULL);
 
@@ -237,7 +240,7 @@ int pomelo_socket_connect(pomelo_socket_t * socket, uint8_t * connect_token) {
 
 int pomelo_socket_listen(
     pomelo_socket_t * socket,
-    uint8_t * private_key,
+    const uint8_t * private_key,
     uint64_t protocol_id,
     size_t max_clients,
     pomelo_address_t * address

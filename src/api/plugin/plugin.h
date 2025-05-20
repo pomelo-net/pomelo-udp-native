@@ -148,7 +148,7 @@ void pomelo_plugin_dispatch_socket_on_listening(
 /// @brief Dispatch connecting event of socket
 void pomelo_plugin_dispatch_socket_on_connecting(
     pomelo_socket_t * socket,
-    uint8_t * connect_token
+    const uint8_t * connect_token
 );
 
 /// @brief Dispatch stopped event of socket

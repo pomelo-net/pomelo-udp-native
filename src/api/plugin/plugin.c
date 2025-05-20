@@ -298,7 +298,7 @@ void pomelo_plugin_dispatch_socket_on_listening(
 
 void pomelo_plugin_dispatch_socket_on_connecting(
     pomelo_socket_t * socket,
-    uint8_t * connect_token
+    const uint8_t * connect_token
 ) {
     assert(socket != NULL);
     pomelo_plugin_manager_t * plugin_manager = socket->context->plugin_manager;

@@ -16,7 +16,7 @@
 int pomelo_connect_token_encode(
     uint8_t * buffer,
     pomelo_connect_token_t * token,
-    uint8_t * key
+    const uint8_t * key
 ) {
     assert(buffer != NULL);
     assert(token != NULL);
@@ -94,7 +94,7 @@ int pomelo_connect_token_encode(
 int pomelo_codec_encode_private_connect_token(
     uint8_t * buffer,
     pomelo_connect_token_t * token,
-    uint8_t * key
+    const uint8_t * key
 ) {
     assert(buffer != NULL);
     assert(token != NULL);
@@ -166,9 +166,9 @@ int pomelo_codec_encode_private_connect_token(
 
 
 int pomelo_connect_token_decode_private(
-    uint8_t * buffer,
+    const uint8_t * buffer,
     pomelo_connect_token_t * token,
-    uint8_t * key
+    const uint8_t * key
 ) {
     assert(buffer != NULL);
     assert(token != NULL);
@@ -182,9 +182,12 @@ int pomelo_connect_token_decode_private(
         token
     );
 
+    // Store decrypted data of the private portion
+    uint8_t decrypted[POMELO_CONNECT_TOKEN_PRIVATE_BYTES];
+
     // Decrypt the private connect token
     int ret = crypto_aead_xchacha20poly1305_ietf_decrypt(
-        buffer,
+        decrypted,
         &decrypted_length,
         NULL,
         buffer,
@@ -202,7 +205,7 @@ int pomelo_connect_token_decode_private(
     pomelo_payload_t payload;
     payload.capacity = POMELO_CONNECT_TOKEN_PRIVATE_BYTES;
     payload.position = 0;
-    payload.data = buffer;
+    payload.data = decrypted;
 
     // client id (Only visible in private part)
     pomelo_payload_read_int64(&payload, &token->client_id);
@@ -375,7 +378,7 @@ void pomelo_codec_encode_connect_token_associated_data(
 
 
 int pomelo_connect_token_decode_public(
-    uint8_t * buffer,
+    const uint8_t * buffer,
     pomelo_connect_token_t * token
 ) {
     assert(buffer != NULL);
@@ -384,7 +387,7 @@ int pomelo_connect_token_decode_public(
     pomelo_payload_t payload;
     payload.position = 0;
     payload.capacity = POMELO_CONNECT_TOKEN_BYTES;
-    payload.data = buffer;
+    payload.data = (uint8_t *) buffer; // Just for reading
 
     // Check the version info
     int cmp = memcmp(buffer, POMELO_VERSION_INFO, POMELO_VERSION_INFO_BYTES);
@@ -444,7 +447,7 @@ int pomelo_connect_token_decode_public(
 int pomelo_codec_encrypt_challenge_token(
     pomelo_payload_t * payload,
     pomelo_challenge_token_t * token,
-    uint8_t * key,
+    const uint8_t * key,
     uint64_t token_sequence
 ) {
     assert(payload != NULL);
@@ -495,7 +498,7 @@ int pomelo_codec_encrypt_challenge_token(
 int pomelo_codec_decrypt_challenge_token(
     pomelo_payload_t * payload,
     pomelo_challenge_token_t * token,
-    uint8_t * key,
+    const uint8_t * key,
     uint64_t token_sequence
 ) {
     assert(payload != NULL);

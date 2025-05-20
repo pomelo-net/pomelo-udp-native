@@ -286,7 +286,7 @@ void POMELO_PLUGIN_CALL plugin_demo_socket_on_listening(
 void POMELO_PLUGIN_CALL plugin_demo_socket_on_connecting(
     pomelo_plugin_t * plugin,
     pomelo_socket_t * socket,
-    uint8_t * connect_token
+    const uint8_t * connect_token
 ) {
     pomelo_track_function();
     pomelo_check(plugin != NULL);

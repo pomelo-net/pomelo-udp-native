@@ -27,7 +27,7 @@ struct pomelo_challenge_token_s {
 int pomelo_codec_encode_private_connect_token(
     uint8_t * buffer,
     pomelo_connect_token_t * token,
-    uint8_t * key
+    const uint8_t * key
 );
 
 
@@ -64,7 +64,7 @@ void pomelo_codec_encode_connect_token_associated_data(
 int pomelo_codec_encrypt_challenge_token(
     pomelo_payload_t * payload,
     pomelo_challenge_token_t * token,
-    uint8_t * key,
+    const uint8_t * key,
     uint64_t token_sequence // nonce
 );
 
@@ -73,7 +73,7 @@ int pomelo_codec_encrypt_challenge_token(
 int pomelo_codec_decrypt_challenge_token(
     pomelo_payload_t * payload,
     pomelo_challenge_token_t * token,
-    uint8_t * key,
+    const uint8_t * key,
     uint64_t token_sequence // nonce
 );
 

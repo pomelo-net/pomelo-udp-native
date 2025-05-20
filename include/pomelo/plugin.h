@@ -85,7 +85,7 @@ typedef void (POMELO_PLUGIN_CALL * pomelo_plugin_socket_listening_callback)(
 typedef void (POMELO_PLUGIN_CALL * pomelo_plugin_socket_connecting_callback)(
     pomelo_plugin_t * plugin,
     pomelo_socket_t * socket,
-    uint8_t * connect_token
+    const uint8_t * connect_token
 );
 
 
