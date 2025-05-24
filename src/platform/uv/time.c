@@ -4,9 +4,10 @@
 #include <time.h>
 #endif
 #include "uv.h"
-#include "platform/platform.h"
+#include "platform-uv.h"
 
-uint64_t pomelo_platform_hrtime(pomelo_platform_t * platform) {
+
+uint64_t pomelo_platform_uv_hrtime(pomelo_platform_uv_t * platform) {
     (void) (platform);
     return uv_hrtime();
 }
@@ -15,7 +16,7 @@ uint64_t pomelo_platform_hrtime(pomelo_platform_t * platform) {
 
 #if UV_VERSION_HEX >= ((1 << 16) | (45 << 8) | 0)
 
-uint64_t pomelo_platform_now(pomelo_platform_t * platform) {
+uint64_t pomelo_platform_uv_now(pomelo_platform_uv_t * platform) {
     (void) platform;
     uv_timespec64_t timespec;
 
@@ -30,7 +31,7 @@ uint64_t pomelo_platform_now(pomelo_platform_t * platform) {
 
 #ifdef _WIN32
 
-uint64_t pomelo_platform_now(pomelo_platform_t * platform) {
+uint64_t pomelo_platform_uv_now(pomelo_platform_uv_t * platform) {
     // Win32 system
     (void) platform;
 
@@ -49,7 +50,7 @@ uint64_t pomelo_platform_now(pomelo_platform_t * platform) {
 
 #else
 
-uint64_t pomelo_platform_now(pomelo_platform_t * platform) {
+uint64_t pomelo_platform_uv_now(pomelo_platform_uv_t * platform) {
     // Unix system
     (void) platform;
 

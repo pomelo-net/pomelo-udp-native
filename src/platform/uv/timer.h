@@ -38,7 +38,7 @@ struct pomelo_platform_timer_s {
 
 struct pomelo_platform_timer_controller_s {
     /// @brief Platform
-    pomelo_platform_t * platform;
+    pomelo_platform_uv_t * platform;
 
     /// @brief Allocator
     pomelo_allocator_t * allocator;
@@ -64,7 +64,7 @@ struct pomelo_platform_timer_controller_s {
 
 /// @brief Create the timer controller
 pomelo_platform_timer_controller_t * pomelo_platform_timer_controller_create(
-    pomelo_platform_t * platform,
+    pomelo_platform_uv_t * platform,
     pomelo_allocator_t * allocator,
     uv_loop_t * uv_loop
 );
@@ -106,7 +106,7 @@ void pomelo_platform_timer_controller_on_shutdown(
 /* -------------------------------------------------------------------------- */
 
 /// @brief Stop timer
-int pomelo_platform_uv_timer_stop(pomelo_platform_timer_t * timer);
+int pomelo_platform_uv_timer_stop_ex(pomelo_platform_timer_t * timer);
 
 
 /// @brief The callback from uv timer

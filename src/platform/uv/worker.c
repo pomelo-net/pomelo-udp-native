@@ -8,7 +8,7 @@
 /* -------------------------------------------------------------------------- */
 
 pomelo_platform_worker_controller_t * pomelo_platform_worker_controller_create(
-    pomelo_platform_t * platform,
+    pomelo_platform_uv_t * platform,
     pomelo_allocator_t * allocator,
     uv_loop_t * uv_loop
 ) {
@@ -109,8 +109,8 @@ void pomelo_platform_worker_controller_statistic(
 }
 
 
-pomelo_platform_task_t * pomelo_platform_submit_worker_task(
-    pomelo_platform_t * platform,
+pomelo_platform_task_t * pomelo_platform_uv_submit_worker_task(
+    pomelo_platform_uv_t * platform,
     pomelo_platform_task_entry entry,
     pomelo_platform_task_complete complete,
     void * data
@@ -160,8 +160,8 @@ pomelo_platform_task_t * pomelo_platform_submit_worker_task(
 }
 
 
-void pomelo_platform_cancel_worker_task(
-    pomelo_platform_t * platform,
+void pomelo_platform_uv_cancel_worker_task(
+    pomelo_platform_uv_t * platform,
     pomelo_platform_task_t * task
 ) {
     (void) platform;

@@ -9,7 +9,7 @@
 /* -------------------------------------------------------------------------- */
 
 pomelo_platform_udp_controller_t * pomelo_platform_udp_controller_create(
-    pomelo_platform_t * platform,
+    pomelo_platform_uv_t * platform,
     pomelo_allocator_t * allocator,
     uv_loop_t * uv_loop
 ) {
@@ -136,8 +136,8 @@ void pomelo_platform_udp_controller_shutdown(
 }
 
 
-pomelo_platform_udp_t * pomelo_platform_udp_bind(
-    pomelo_platform_t * platform,
+pomelo_platform_udp_t * pomelo_platform_uv_udp_bind(
+    pomelo_platform_uv_t * platform,
     pomelo_address_t * address
 ) {
     assert(platform != NULL);
@@ -195,8 +195,8 @@ pomelo_platform_udp_t * pomelo_platform_udp_bind(
 }
 
 
-pomelo_platform_udp_t * pomelo_platform_udp_connect(
-    pomelo_platform_t * platform,
+pomelo_platform_udp_t * pomelo_platform_uv_udp_connect(
+    pomelo_platform_uv_t * platform,
     pomelo_address_t * address
 ) {
     assert(platform != NULL);
@@ -267,8 +267,8 @@ pomelo_platform_udp_t * pomelo_platform_udp_connect(
 }
 
 
-int pomelo_platform_udp_stop(
-    pomelo_platform_t * platform,
+int pomelo_platform_uv_udp_stop(
+    pomelo_platform_uv_t * platform,
     pomelo_platform_udp_t * socket
 ) {
     (void) platform;
@@ -286,8 +286,8 @@ int pomelo_platform_udp_stop(
 #define BUFFER_LENGTH_TYPE size_t
 #endif
 
-int pomelo_platform_udp_send(
-    pomelo_platform_t * platform,
+int pomelo_platform_uv_udp_send(
+    pomelo_platform_uv_t * platform,
     pomelo_platform_udp_t * socket,
     pomelo_address_t * address,
     int niovec,
@@ -353,8 +353,8 @@ int pomelo_platform_udp_send(
 }
 
 
-void pomelo_platform_udp_recv_start(
-    pomelo_platform_t * platform,
+void pomelo_platform_uv_udp_recv_start(
+    pomelo_platform_uv_t * platform,
     pomelo_platform_udp_t * socket,
     void * context,
     pomelo_platform_alloc_cb alloc_callback,

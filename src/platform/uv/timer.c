@@ -4,7 +4,7 @@
 
 
 pomelo_platform_timer_controller_t * pomelo_platform_timer_controller_create(
-    pomelo_platform_t * platform,
+    pomelo_platform_uv_t * platform,
     pomelo_allocator_t * allocator,
     uv_loop_t * uv_loop
 ) {
@@ -110,13 +110,13 @@ void pomelo_platform_timer_controller_shutdown(
     pomelo_list_iterator_t it;
     pomelo_list_iterator_init(&it, controller->timers);
     while (pomelo_list_iterator_next(&it, &timer) == 0) {
-        pomelo_platform_uv_timer_stop(timer);
+        pomelo_platform_uv_timer_stop_ex(timer);
     }
 }
 
 
-int pomelo_platform_timer_start(
-    pomelo_platform_t * platform,
+int pomelo_platform_uv_timer_start(
+    pomelo_platform_uv_t * platform,
     pomelo_platform_timer_entry entry,
     uint64_t timeout_ms,
     uint64_t repeat_ms,
@@ -172,16 +172,15 @@ int pomelo_platform_timer_start(
 }
 
 
-
-void pomelo_platform_timer_stop(
-    pomelo_platform_t * platform,
+void pomelo_platform_uv_timer_stop(
+    pomelo_platform_uv_t * platform,
     pomelo_platform_timer_handle_t * handle
 ) {
     (void) platform;
     assert(handle != NULL);
     if (!handle->timer) return; // No timer
 
-    pomelo_platform_uv_timer_stop(handle->timer);
+    pomelo_platform_uv_timer_stop_ex(handle->timer);
     handle->timer = NULL;
 }
 
@@ -206,7 +205,7 @@ static void uv_timer_stop_complete(uv_handle_t * handle) {
 }
 
 
-int pomelo_platform_uv_timer_stop(pomelo_platform_timer_t * timer) {
+int pomelo_platform_uv_timer_stop_ex(pomelo_platform_timer_t * timer) {
     assert(timer != NULL);
     if (!timer->is_running) {
         return 0; // The timer is not running. Nothing to do
@@ -234,7 +233,7 @@ void pomelo_platform_uv_timer_callback(uv_timer_t * uv_timer) {
 
     if (!timer->is_repeat) {
         // Timer is not repeating, stop running
-        pomelo_platform_uv_timer_stop(timer);
+        pomelo_platform_uv_timer_stop_ex(timer);
     }
 
     entry(data);

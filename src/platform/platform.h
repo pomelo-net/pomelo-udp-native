@@ -24,7 +24,8 @@ typedef struct pomelo_platform_timer_handle_s pomelo_platform_timer_handle_t;
 typedef struct pomelo_platform_iovec_s pomelo_platform_iovec_t;
 
 /// @brief The done point of work which will be run after entry and in main
-/// thread
+/// thread.
+/// TODO: Change canceled to flag here
 typedef void (*pomelo_platform_task_complete)(void * data, bool canceled);
 
 /// @brief The payload receiving callback

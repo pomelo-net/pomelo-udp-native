@@ -15,7 +15,7 @@ typedef struct pomelo_platform_task_worker_s pomelo_platform_task_worker_t;
 
 struct pomelo_platform_worker_controller_s {
     /// @brief Platform
-    pomelo_platform_t * platform;
+    pomelo_platform_uv_t * platform;
 
     /// @brief Allocator
     pomelo_allocator_t * allocator;
@@ -65,7 +65,7 @@ struct pomelo_platform_task_worker_s {
 
 /// @brief Create task worker controller
 pomelo_platform_worker_controller_t * pomelo_platform_worker_controller_create(
-    pomelo_platform_t * platform,
+    pomelo_platform_uv_t * platform,
     pomelo_allocator_t * allocator,
     uv_loop_t * uv_loop
 );

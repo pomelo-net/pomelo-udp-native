@@ -172,6 +172,7 @@ set(SRC_PLATFORM_UV
     include/pomelo/platforms/platform-uv.h
     src/platform/uv/executor.c
     src/platform/uv/executor.h
+    src/platform/uv/glue.c
     src/platform/uv/platform-uv.c
     src/platform/uv/platform-uv.h
     src/platform/uv/worker.c

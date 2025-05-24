@@ -10,7 +10,7 @@
 
 pomelo_platform_threadsafe_controller_t *
 pomelo_platform_threadsafe_controller_create(
-    pomelo_platform_t * platform,
+    pomelo_platform_uv_t * platform,
     pomelo_allocator_t * allocator,
     uv_loop_t * uv_loop
 ) {
@@ -146,8 +146,8 @@ void pomelo_platform_threadsafe_controller_statistic(
 }
 
 
-pomelo_threadsafe_executor_t * pomelo_platform_acquire_threadsafe_executor(
-    pomelo_platform_t * platform
+pomelo_threadsafe_executor_t * pomelo_platform_uv_acquire_threadsafe_executor(
+    pomelo_platform_uv_t * platform
 ) {
     assert(platform != NULL);
     pomelo_platform_threadsafe_controller_t * controller =
@@ -192,8 +192,8 @@ static void release_threadsafe_executor(
 }
 
 
-void pomelo_platform_release_threadsafe_executor(
-    pomelo_platform_t * platform,
+void pomelo_platform_uv_release_threadsafe_executor(
+    pomelo_platform_uv_t * platform,
     pomelo_threadsafe_executor_t * executor
 ) {
     assert(platform != NULL);
@@ -202,7 +202,7 @@ void pomelo_platform_release_threadsafe_executor(
     if (!pomelo_atomic_int64_load(&controller->running)) {
         return; // Controller is not running
     }
-    pomelo_threadsafe_executor_submit(
+    pomelo_threadsafe_executor_uv_submit(
         platform,
         executor,
         (pomelo_platform_task_entry) release_threadsafe_executor,
@@ -211,8 +211,8 @@ void pomelo_platform_release_threadsafe_executor(
 }
 
 
-pomelo_platform_task_t * pomelo_threadsafe_executor_submit(
-    pomelo_platform_t * platform,
+pomelo_platform_task_t * pomelo_threadsafe_executor_uv_submit(
+    pomelo_platform_uv_t * platform,
     pomelo_threadsafe_executor_t * executor,
     pomelo_platform_task_entry entry,
     void * data

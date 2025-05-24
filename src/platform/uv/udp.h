@@ -62,7 +62,7 @@ struct pomelo_platform_udp_s {
 
 struct pomelo_platform_udp_controller_s {
     /// @brief Platform
-    pomelo_platform_t * platform;
+    pomelo_platform_uv_t * platform;
 
     /// @brief The allocator
     pomelo_allocator_t * allocator;
@@ -114,7 +114,7 @@ struct pomelo_platform_send_s {
 
 /// @brief Create platform socket controller
 pomelo_platform_udp_controller_t * pomelo_platform_udp_controller_create(
-    pomelo_platform_t * platform,
+    pomelo_platform_uv_t * platform,
     pomelo_allocator_t * allocator,
     uv_loop_t * uv_loop
 );
